@@ -81,3 +81,9 @@
 - [ ] Preparar para build de produção
 - [ ] Configurar CI/CD
 - [ ] Documentação de deployment
+
+
+## Bugs & Correções
+- [x] Corrigir fluxo OAuth (erro: Missing code or state parameter)
+- [x] Implementar login com usuário de teste
+- [ ] Testar autenticação em diferentes plataformas

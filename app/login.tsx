@@ -1,15 +1,18 @@
-import { ScrollView, Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
+import { ScrollView, Text, View, TouchableOpacity, ActivityIndicator, Linking, Platform } from "react-native";
 import { useEffect } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/hooks/use-auth";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
+import { getLoginUrl } from "@/constants/oauth";
+import { useTestLogin } from "@/hooks/use-test-login";
 
 export default function LoginScreen() {
   const router = useRouter();
   const colors = useColors();
   const { user, isAuthenticated, loading } = useAuth();
+  const { loginWithTestUser } = useTestLogin();
 
   useEffect(() => {
     if (isAuthenticated && user) {
@@ -17,9 +20,28 @@ export default function LoginScreen() {
     }
   }, [isAuthenticated, user]);
 
-  const handleLogin = () => {
-    // Redirect to OAuth login
-    router.push("/oauth/callback");
+  const handleLogin = async () => {
+    try {
+      const loginUrl = getLoginUrl();
+      console.log("[Login] OAuth URL:", loginUrl);
+
+      if (Platform.OS === "web") {
+        // Web: redirect directly
+        window.location.href = loginUrl;
+      } else {
+        // Native: open in browser
+        await Linking.openURL(loginUrl);
+      }
+    } catch (error) {
+      console.error("[Login] Failed to start OAuth:", error);
+    }
+  };
+
+  const handleTestLogin = async () => {
+    const success = await loginWithTestUser();
+    if (success) {
+      router.replace("/(tabs)");
+    }
   };
 
   if (loading) {
@@ -63,14 +85,26 @@ export default function LoginScreen() {
           </View>
 
           {/* Login Button */}
-          <TouchableOpacity
-            onPress={handleLogin}
-            className="w-full bg-primary rounded-full py-4 items-center justify-center"
-            activeOpacity={0.8}
-          >
-              <View className="flex-row items-center">
+      <TouchableOpacity
+        onPress={handleLogin}
+        className="w-full bg-primary rounded-full py-4 items-center justify-center"
+        activeOpacity={0.8}
+      >
+            <View className="flex-row items-center">
               <Ionicons name="log-in" size={20} color="white" />
               <Text className="text-white font-semibold ml-2">Entrar com Manus</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={handleTestLogin}
+            className="w-full bg-surface rounded-full py-4 items-center justify-center border border-border"
+            style={{ borderColor: colors.border }}
+            activeOpacity={0.8}
+          >
+            <View className="flex-row items-center">
+              <Ionicons name="bug" size={20} color={colors.primary} />
+              <Text className="text-foreground font-semibold ml-2">Entrar como Teste</Text>
             </View>
           </TouchableOpacity>
 
