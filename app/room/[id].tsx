@@ -1,72 +1,82 @@
-import { ScrollView, Text, View, TouchableOpacity, TextInput, FlatList, Pressable } from "react-native";
+import { ScrollView, Text, View, TouchableOpacity, TextInput, FlatList, Pressable, ActivityIndicator } from "react-native";
 import { useState, useEffect } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
+import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/hooks/use-auth";
 
 interface ChatMessage {
-  id: string;
-  userId: string;
-  userName: string;
+  id: number;
+  userId: number;
   message: string;
-  timestamp: string;
+  createdAt: Date;
   isOwn: boolean;
+  userName?: string;
 }
-
-const MOCK_MESSAGES: ChatMessage[] = [
-  {
-    id: "1",
-    userId: "user1",
-    userName: "João",
-    message: "Que filme incrível!",
-    timestamp: "14:30",
-    isOwn: false,
-  },
-  {
-    id: "2",
-    userId: "user2",
-    userName: "Maria",
-    message: "Concordo! Adorei essa cena",
-    timestamp: "14:31",
-    isOwn: false,
-  },
-  {
-    id: "3",
-    userId: "user3",
-    userName: "Você",
-    message: "Melhor filme que já vi!",
-    timestamp: "14:32",
-    isOwn: true,
-  },
-];
 
 export default function RoomScreen() {
   const router = useRouter();
   const colors = useColors();
   const { id } = useLocalSearchParams();
-  const [messages, setMessages] = useState<ChatMessage[]>(MOCK_MESSAGES);
+  const { user } = useAuth();
+  const roomId = Number(id);
+
+  const { data: room, isLoading: roomLoading } = trpc.rooms.get.useQuery({ id: roomId });
+  const { data: messages, refetch: refetchMessages } = trpc.chat.messages.useQuery({
+    roomId,
+    limit: 50,
+  });
+  const { data: participantCount } = trpc.participants.count.useQuery({ roomId });
+  const { data: videoState } = trpc.rooms.getVideoState.useQuery({ roomId });
+
   const [newMessage, setNewMessage] = useState("");
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [usersOnline, setUsersOnline] = useState(3);
+  const [isPlaying, setIsPlaying] = useState(videoState?.isPlaying || false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+
+  const sendMessageMutation = trpc.chat.send.useMutation({
+    onSuccess: () => {
+      setNewMessage("");
+      refetchMessages();
+    },
+  });
+
+  const updateVideoStateMutation = trpc.rooms.updateVideoState.useMutation();
+
+  useEffect(() => {
+    if (messages) {
+      const formatted = messages.map((msg: any) => ({
+        ...msg,
+        isOwn: msg.userId === user?.id,
+        userName: msg.userId === user?.id ? "Você" : `Usuário ${msg.userId}`,
+      }));
+      setChatMessages(formatted);
+    }
+  }, [messages, user?.id]);
+
+  useEffect(() => {
+    if (videoState && videoState.isPlaying !== null) {
+      setIsPlaying(videoState.isPlaying);
+    }
+  }, [videoState]);
 
   const handleSendMessage = () => {
     if (!newMessage.trim()) return;
 
-    const message: ChatMessage = {
-      id: String(messages.length + 1),
-      userId: "current-user",
-      userName: "Você",
+    sendMessageMutation.mutate({
+      roomId,
       message: newMessage,
-      timestamp: new Date().toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      isOwn: true,
-    };
+    });
+  };
 
-    setMessages([...messages, message]);
-    setNewMessage("");
+  const handleTogglePlay = () => {
+    const newState = !isPlaying;
+    setIsPlaying(newState);
+    updateVideoStateMutation.mutate({
+      roomId,
+      isPlaying: newState,
+    });
   };
 
   const handleLeaveRoom = () => {
@@ -74,64 +84,66 @@ export default function RoomScreen() {
   };
 
   const renderChatMessage = ({ item }: { item: ChatMessage }) => (
-    <View
-      className={`mb-3 flex-row ${item.isOwn ? "justify-end" : "justify-start"}`}
-    >
+    <View className={`mb-3 flex-row ${item.isOwn ? "justify-end" : "justify-start"}`}>
       {!item.isOwn && (
         <View className="w-8 h-8 rounded-full bg-primary items-center justify-center mr-2">
           <Text className="text-white text-xs font-bold">
-            {item.userName.charAt(0).toUpperCase()}
+            {item.userName?.charAt(0).toUpperCase()}
           </Text>
         </View>
       )}
 
       <View
         className={`max-w-xs rounded-lg px-3 py-2 ${
-          item.isOwn
-            ? "bg-primary"
-            : "bg-surface border border-border"
+          item.isOwn ? "bg-primary" : "bg-surface border border-border"
         }`}
-        style={
-          !item.isOwn
-            ? { borderColor: colors.border }
-            : {}
-        }
+        style={!item.isOwn ? { borderColor: colors.border } : {}}
       >
         {!item.isOwn && (
-          <Text className="text-xs font-semibold text-muted mb-1">
-            {item.userName}
-          </Text>
+          <Text className="text-xs font-semibold text-muted mb-1">{item.userName}</Text>
         )}
-        <Text
-          className={`text-sm ${
-            item.isOwn ? "text-white" : "text-foreground"
-          }`}
-        >
+        <Text className={`text-sm ${item.isOwn ? "text-white" : "text-foreground"}`}>
           {item.message}
         </Text>
-        <Text
-          className={`text-xs mt-1 ${
-            item.isOwn ? "text-blue-100" : "text-muted"
-          }`}
-        >
-          {item.timestamp}
+        <Text className={`text-xs mt-1 ${item.isOwn ? "text-blue-100" : "text-muted"}`}>
+          {new Date(item.createdAt).toLocaleTimeString("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
         </Text>
       </View>
     </View>
   );
 
+  if (roomLoading) {
+    return (
+      <ScreenContainer className="items-center justify-center">
+        <ActivityIndicator size="large" color={colors.primary} />
+      </ScreenContainer>
+    );
+  }
+
+  if (!room) {
+    return (
+      <ScreenContainer className="items-center justify-center">
+        <Text className="text-foreground">Sala não encontrada</Text>
+      </ScreenContainer>
+    );
+  }
+
   return (
     <ScreenContainer className="p-0 flex-1">
-      {/* Header */}
       <View
         className="flex-row items-center justify-between px-4 py-3 border-b border-border"
         style={{ borderColor: colors.border }}
       >
         <View className="flex-1">
-          <Text className="text-lg font-semibold text-foreground">Sala: Inception</Text>
+          <Text className="text-lg font-semibold text-foreground">{room.name}</Text>
           <View className="flex-row items-center mt-1">
             <Ionicons name="people" size={14} color={colors.success} />
-            <Text className="text-xs text-muted ml-1">{usersOnline} pessoas online</Text>
+            <Text className="text-xs text-muted ml-1">
+              {participantCount || 0} pessoas online
+            </Text>
           </View>
         </View>
         <TouchableOpacity
@@ -142,16 +154,14 @@ export default function RoomScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Video Player Area */}
       <View className="bg-black h-64 items-center justify-center">
         <Ionicons name="play-circle" size={80} color="white" />
-        <Text className="text-white text-sm mt-4">Inception</Text>
+        <Text className="text-white text-sm mt-4">{room.videoTitle}</Text>
       </View>
 
-      {/* Player Controls */}
       <View className="flex-row items-center justify-between px-4 py-3 bg-surface border-b border-border">
         <TouchableOpacity
-          onPress={() => setIsPlaying(!isPlaying)}
+          onPress={handleTogglePlay}
           className="flex-row items-center gap-2"
         >
           <Ionicons
@@ -160,7 +170,7 @@ export default function RoomScreen() {
             color={colors.primary}
           />
           <Text className="text-sm text-foreground">
-            {isPlaying ? "Pausado" : "Reproduzindo"}
+            {isPlaying ? "Reproduzindo" : "Pausado"}
           </Text>
         </TouchableOpacity>
 
@@ -174,21 +184,18 @@ export default function RoomScreen() {
         </View>
       </View>
 
-      {/* Chat Section */}
       <View className="flex-1 flex-row bg-surface">
-        {/* Messages */}
         <View className="flex-1 px-4 py-3">
           <FlatList
-            data={messages}
+            data={chatMessages}
             renderItem={renderChatMessage}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item) => item.id.toString()}
             contentContainerStyle={{ paddingVertical: 8 }}
             inverted
           />
         </View>
       </View>
 
-      {/* Chat Input */}
       <View
         className="flex-row items-center gap-2 px-4 py-3 border-t border-border bg-surface"
         style={{ borderColor: colors.border }}
@@ -206,7 +213,7 @@ export default function RoomScreen() {
         />
         <TouchableOpacity
           onPress={handleSendMessage}
-          disabled={!newMessage.trim()}
+          disabled={!newMessage.trim() || sendMessageMutation.isPending}
           className="w-10 h-10 rounded-full bg-primary items-center justify-center"
           activeOpacity={0.8}
         >

@@ -4,6 +4,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
+import { trpc } from "@/lib/trpc";
 
 type Platform = "youtube" | "google-drive" | "netflix" | "prime";
 
@@ -20,7 +21,20 @@ export default function CreateRoomScreen() {
   const [roomName, setRoomName] = useState("");
   const [selectedPlatform, setSelectedPlatform] = useState<Platform>("youtube");
   const [videoUrl, setVideoUrl] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [videoTitle, setVideoTitle] = useState("");
+
+  const createRoomMutation = trpc.rooms.create.useMutation({
+    onSuccess: (room) => {
+      Alert.alert("Sucesso", "Sala criada com sucesso!");
+      router.push({
+        pathname: "/room/[id]",
+        params: { id: room.id },
+      });
+    },
+    onError: (error) => {
+      Alert.alert("Erro", error.message || "Falha ao criar a sala");
+    },
+  });
 
   const handleCreateRoom = async () => {
     if (!roomName.trim()) {
@@ -33,22 +47,18 @@ export default function CreateRoomScreen() {
       return;
     }
 
-    setLoading(true);
-
-    try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      // Navigate to room
-      router.push({
-        pathname: "/room/[id]",
-        params: { id: "new-room-1" },
-      });
-    } catch (error) {
-      Alert.alert("Erro", "Falha ao criar a sala. Tente novamente.");
-    } finally {
-      setLoading(false);
+    if (!videoTitle.trim()) {
+      Alert.alert("Erro", "Digite o título do vídeo");
+      return;
     }
+
+    createRoomMutation.mutate({
+      name: roomName,
+      videoTitle: videoTitle,
+      platform: selectedPlatform,
+      videoUrl: videoUrl,
+      videoId: videoUrl,
+    });
   };
 
   const handleCancel = () => {
@@ -58,7 +68,6 @@ export default function CreateRoomScreen() {
   return (
     <ScreenContainer className="p-4">
       <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
-        {/* Header */}
         <View className="flex-row items-center justify-between mb-6">
           <Text className="text-2xl font-bold text-foreground">Criar Sala</Text>
           <TouchableOpacity onPress={handleCancel}>
@@ -66,9 +75,7 @@ export default function CreateRoomScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Form */}
         <View className="gap-6">
-          {/* Room Name */}
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">Nome da Sala</Text>
             <TextInput
@@ -84,7 +91,21 @@ export default function CreateRoomScreen() {
             />
           </View>
 
-          {/* Platform Selection */}
+          <View>
+            <Text className="text-sm font-semibold text-foreground mb-2">Título do Vídeo</Text>
+            <TextInput
+              placeholder="Ex: Inception"
+              placeholderTextColor={colors.muted}
+              value={videoTitle}
+              onChangeText={setVideoTitle}
+              className="bg-surface rounded-lg px-4 py-3 border border-border text-foreground"
+              style={{
+                borderColor: colors.border,
+                color: colors.foreground,
+              }}
+            />
+          </View>
+
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">Plataforma</Text>
             <View className="gap-2">
@@ -125,7 +146,6 @@ export default function CreateRoomScreen() {
             </View>
           </View>
 
-          {/* Video URL/ID */}
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">
               {selectedPlatform === "youtube"
@@ -157,7 +177,6 @@ export default function CreateRoomScreen() {
             </Text>
           </View>
 
-          {/* Info Box */}
           <View className="bg-surface rounded-lg p-4 border border-border">
             <View className="flex-row">
               <Ionicons name="information-circle" size={20} color={colors.primary} />
@@ -168,16 +187,15 @@ export default function CreateRoomScreen() {
           </View>
         </View>
 
-        {/* Buttons */}
         <View className="gap-3 mt-8">
           <TouchableOpacity
             onPress={handleCreateRoom}
-            disabled={loading}
+            disabled={createRoomMutation.isPending}
             className="bg-primary rounded-full py-4 items-center justify-center"
             activeOpacity={0.8}
           >
             <Text className="text-white font-semibold">
-              {loading ? "Criando..." : "Criar Sala"}
+              {createRoomMutation.isPending ? "Criando..." : "Criar Sala"}
             </Text>
           </TouchableOpacity>
 

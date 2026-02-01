@@ -1,10 +1,11 @@
+import { z } from "zod";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
+import { publicProcedure, router, protectedProcedure } from "./_core/trpc";
+import * as db from "./db";
 
 export const appRouter = router({
-  // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
@@ -17,12 +18,133 @@ export const appRouter = router({
     }),
   }),
 
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
+  rooms: router({
+    list: publicProcedure.query(async () => {
+      return db.getRooms();
+    }),
+
+    get: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        return db.getRoomById(input.id);
+      }),
+
+    create: protectedProcedure
+      .input(
+        z.object({
+          name: z.string().min(1).max(255),
+          videoTitle: z.string().min(1).max(255),
+          platform: z.enum(["youtube", "google-drive", "netflix", "prime"]),
+          videoUrl: z.string().url(),
+          videoId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        return db.createRoom({
+          creatorId: ctx.user.id,
+          name: input.name,
+          videoTitle: input.videoTitle,
+          platform: input.platform,
+          videoUrl: input.videoUrl,
+          videoId: input.videoId,
+          currentTime: 0,
+          isPlaying: false,
+          duration: 0,
+        });
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        const room = await db.getRoomById(input.id);
+        if (!room || room.creatorId !== ctx.user.id) {
+          throw new Error("Unauthorized");
+        }
+        await db.deleteRoom(input.id);
+        return { success: true };
+      }),
+
+    updateVideoState: protectedProcedure
+      .input(
+        z.object({
+          roomId: z.number(),
+          currentTime: z.number().optional(),
+          isPlaying: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        await db.updateVideoSyncState(input.roomId, {
+          currentTime: input.currentTime,
+          isPlaying: input.isPlaying,
+        });
+        return { success: true };
+      }),
+
+    getVideoState: publicProcedure
+      .input(z.object({ roomId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getVideoSyncState(input.roomId);
+      }),
+  }),
+
+  participants: router({
+    join: protectedProcedure
+      .input(z.object({ roomId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await db.addParticipant({
+          roomId: input.roomId,
+          userId: ctx.user.id,
+        });
+        return { success: true };
+      }),
+
+    leave: protectedProcedure
+      .input(z.object({ roomId: z.number() }))
+      .mutation(async ({ ctx, input }) => {
+        await db.removeParticipant(input.roomId, ctx.user.id);
+        return { success: true };
+      }),
+
+    list: publicProcedure
+      .input(z.object({ roomId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getRoomParticipants(input.roomId);
+      }),
+
+    count: publicProcedure
+      .input(z.object({ roomId: z.number() }))
+      .query(async ({ input }) => {
+        return db.getRoomParticipantCount(input.roomId);
+      }),
+  }),
+
+  chat: router({
+    send: protectedProcedure
+      .input(
+        z.object({
+          roomId: z.number(),
+          message: z.string().min(1).max(1000),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        return db.sendMessage({
+          roomId: input.roomId,
+          userId: ctx.user.id,
+          message: input.message,
+        });
+      }),
+
+    messages: publicProcedure
+      .input(
+        z.object({
+          roomId: z.number(),
+          limit: z.number().min(1).max(100).default(50),
+        })
+      )
+      .query(async ({ input }) => {
+        return db.getRoomMessages(input.roomId, input.limit);
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

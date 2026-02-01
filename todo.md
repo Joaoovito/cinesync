@@ -15,12 +15,12 @@
 - [x] Navegação entre telas (tab bar)
 
 ## Funcionalidade de Salas
-- [ ] Criar nova sala
-- [ ] Listar salas disponíveis
-- [ ] Entrar em uma sala
-- [ ] Sair de uma sala
-- [ ] Deletar sala (apenas criador)
-- [ ] Exibir número de usuários online
+- [x] Criar nova sala
+- [x] Listar salas disponíveis
+- [x] Entrar em uma sala
+- [x] Sair de uma sala
+- [x] Deletar sala (apenas criador)
+- [x] Exibir número de usuários online
 
 ## Player de Vídeo
 - [ ] Integração com YouTube IFrame API
@@ -54,12 +54,12 @@
 - [ ] Controle de volume de áudio
 
 ## Integração com APIs
-- [ ] Configurar servidor backend (Node.js + Express)
-- [ ] Implementar banco de dados (MySQL com Drizzle)
-- [ ] Criar endpoints REST para salas
-- [ ] Criar endpoints REST para chat
+- [x] Configurar servidor backend (Node.js + Express)
+- [x] Implementar banco de dados (MySQL com Drizzle)
+- [x] Criar endpoints REST para salas
+- [x] Criar endpoints REST para chat
 - [ ] Implementar WebSocket para tempo real
-- [ ] Autenticação JWT
+- [x] Autenticação JWT (Manus OAuth)
 
 ## Design e Interface
 - [x] Aplicar paleta de cores
