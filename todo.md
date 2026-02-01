@@ -87,3 +87,4 @@
 - [x] Corrigir fluxo OAuth (erro: Missing code or state parameter)
 - [x] Implementar login com usuário de teste
 - [ ] Testar autenticação em diferentes plataformas
+- [x] Bug: Criar sala não está funcionando

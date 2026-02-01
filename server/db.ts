@@ -110,18 +110,27 @@ export async function createRoom(data: InsertRoom): Promise<Room> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await db.insert(rooms).values(data);
-  const roomId = Number((result as any).insertId);
+  try {
+    const result = await db.insert(rooms).values(data);
+    const roomId = Number((result as any).insertId);
+    console.log("[DB] Room created with ID:", roomId);
 
-  // Create video sync state for the room
-  await db.insert(videoSyncState).values({
-    roomId: Number(roomId),
-    currentTime: 0,
-    isPlaying: false,
-  });
+    // Create video sync state for the room
+    await db.insert(videoSyncState).values({
+      roomId: Number(roomId),
+      currentTime: 0,
+      isPlaying: false,
+    });
 
-  const room = await db.select().from(rooms).where(eq(rooms.id, Number(roomId))).limit(1);
-  return room[0];
+    const room = await db.select().from(rooms).where(eq(rooms.id, Number(roomId))).limit(1);
+    if (!room || room.length === 0) {
+      throw new Error("Failed to retrieve created room");
+    }
+    return room[0];
+  } catch (error) {
+    console.error("[DB] Error creating room:", error);
+    throw error;
+  }
 }
 
 export async function getRooms(): Promise<Room[]> {
