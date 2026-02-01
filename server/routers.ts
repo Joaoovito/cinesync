@@ -40,6 +40,8 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        console.log("[Router] Creating room with user:", ctx.user.id);
+        console.log("[Router] Input:", input);
         return db.createRoom({
           creatorId: ctx.user.id,
           name: input.name,

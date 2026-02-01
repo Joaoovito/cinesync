@@ -71,7 +71,7 @@ export type InsertChatMessage = typeof chatMessages.$inferInsert;
 // Video sync state table
 export const videoSyncState = mysqlTable("videoSyncState", {
   id: int("id").autoincrement().primaryKey(),
-  roomId: int("roomId").notNull().unique(),
+  roomId: int("roomId").notNull(),
   currentTime: int("currentTime").default(0).notNull(),
   isPlaying: boolean("isPlaying").default(false),
   lastSyncAt: timestamp("lastSyncAt").defaultNow().onUpdateNow().notNull(),

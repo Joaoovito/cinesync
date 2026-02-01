@@ -88,3 +88,5 @@
 - [x] Implementar login com usuário de teste
 - [ ] Testar autenticação em diferentes plataformas
 - [x] Bug: Criar sala não está funcionando
+- [x] Bug: Criação de sala ainda não está funcionando (usuário reportou)
+- [x] Bug: Player de vídeo não roda (mostrar vídeo real do YouTube)

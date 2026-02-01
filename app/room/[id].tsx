@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
+import { VideoPlayer } from "@/components/video-player";
 
 interface ChatMessage {
   id: number;
@@ -154,9 +155,14 @@ export default function RoomScreen() {
         </TouchableOpacity>
       </View>
 
-      <View className="bg-black h-64 items-center justify-center">
-        <Ionicons name="play-circle" size={80} color="white" />
-        <Text className="text-white text-sm mt-4">{room.videoTitle}</Text>
+      <View className="px-4 py-3">
+        <VideoPlayer
+          videoId={room.videoId}
+          platform={room.platform}
+          title={room.videoTitle}
+          isPlaying={isPlaying}
+          currentTime={room.currentTime}
+        />
       </View>
 
       <View className="flex-row items-center justify-between px-4 py-3 bg-surface border-b border-border">

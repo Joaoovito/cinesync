@@ -115,12 +115,17 @@ export async function createRoom(data: InsertRoom): Promise<Room> {
     const roomId = Number((result as any).insertId);
     console.log("[DB] Room created with ID:", roomId);
 
+    if (!roomId || isNaN(roomId) || roomId <= 0) {
+      throw new Error(`Invalid roomId: ${roomId}`);
+    }
+
     // Create video sync state for the room
     await db.insert(videoSyncState).values({
-      roomId: Number(roomId),
+      roomId: roomId,
       currentTime: 0,
       isPlaying: false,
     });
+    console.log("[DB] Video sync state created for room:", roomId);
 
     const room = await db.select().from(rooms).where(eq(rooms.id, Number(roomId))).limit(1);
     if (!room || room.length === 0) {
