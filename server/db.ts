@@ -112,7 +112,8 @@ export async function createRoom(data: InsertRoom): Promise<Room> {
 
   try {
     const result = await db.insert(rooms).values(data);
-    const roomId = Number((result as any).insertId);
+    let roomId = Number((result as any).insertId) || Number((result as any).lastInsertRowid);
+    console.log("[DB] Insert result:", result);
     console.log("[DB] Room created with ID:", roomId);
 
     if (!roomId || isNaN(roomId) || roomId <= 0) {

@@ -25,11 +25,10 @@ export default function CreateRoomScreen() {
 
   const createRoomMutation = trpc.rooms.create.useMutation({
     onSuccess: (room) => {
+      console.log("[CreateRoom] Room created:", room);
       Alert.alert("Sucesso", "Sala criada com sucesso!");
-      router.push({
-        pathname: "/room/[id]",
-        params: { id: room.id },
-      });
+      trpc.useUtils().rooms.list.invalidate();
+      router.replace("/(tabs)");
     },
     onError: (error) => {
       Alert.alert("Erro", error.message || "Falha ao criar a sala");

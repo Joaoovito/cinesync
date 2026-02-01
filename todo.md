@@ -90,3 +90,4 @@
 - [x] Bug: Criar sala não está funcionando
 - [x] Bug: Criação de sala ainda não está funcionando (usuário reportou)
 - [x] Bug: Player de vídeo não roda (mostrar vídeo real do YouTube)
+- [x] Bug: Salas criadas não aparecem na lista (usuário reportou)
