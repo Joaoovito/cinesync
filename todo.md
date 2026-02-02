@@ -114,3 +114,10 @@
 - [x] Implementar persistência do tempo do vídeo mesmo sem usuários na sala
 - [x] Salvar currentTime automaticamente no banco de dados
 - [x] Carregar tempo salvo quando usuário entra na sala
+
+## Player Independente (expo-video)
+- [x] Criar player com expo-video para controle total de reprodução
+- [x] Implementar sincronização real de tempo entre usuários
+- [x] Suportar URLs diretas de vídeo (MP4, WebM, HLS)
+- [x] Atualizar criação de sala para aceitar URLs diretas
+- [x] Testar sincronização entre múltiplos usuários

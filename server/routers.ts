@@ -34,7 +34,7 @@ export const appRouter = router({
         z.object({
           name: z.string().min(1).max(255),
           videoTitle: z.string().min(1).max(255),
-          platform: z.enum(["youtube", "google-drive", "netflix", "prime"]),
+          platform: z.enum(["youtube", "google-drive", "netflix", "prime", "direct", "url"]),
           videoUrl: z.string().url(),
           videoId: z.string().min(1),
         })

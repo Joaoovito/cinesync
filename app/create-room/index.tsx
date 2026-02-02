@@ -6,20 +6,28 @@ import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 
-type Platform = "youtube" | "google-drive" | "netflix" | "prime";
+type Platform = "direct" | "google-drive";
 
-const PLATFORMS: { label: string; value: Platform }[] = [
-  { label: "YouTube", value: "youtube" },
-  { label: "Google Drive", value: "google-drive" },
-  { label: "Netflix", value: "netflix" },
-  { label: "Prime Video", value: "prime" },
+const PLATFORMS: { label: string; value: Platform; icon: string; description: string }[] = [
+  { 
+    label: "URL Direta", 
+    value: "direct", 
+    icon: "link",
+    description: "MP4, WebM, M3U8 ou qualquer URL de vídeo"
+  },
+  { 
+    label: "Google Drive", 
+    value: "google-drive", 
+    icon: "logo-google",
+    description: "Vídeos compartilhados do Google Drive"
+  },
 ];
 
 export default function CreateRoomScreen() {
   const router = useRouter();
   const colors = useColors();
   const [roomName, setRoomName] = useState("");
-  const [selectedPlatform, setSelectedPlatform] = useState<Platform>("youtube");
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform>("direct");
   const [videoUrl, setVideoUrl] = useState("");
   const [videoTitle, setVideoTitle] = useState("");
 
@@ -35,6 +43,26 @@ export default function CreateRoomScreen() {
     },
   });
 
+  // Extrair ID do Google Drive da URL
+  const extractGoogleDriveId = (url: string): string => {
+    // Formatos suportados:
+    // https://drive.google.com/file/d/FILE_ID/view
+    // https://drive.google.com/open?id=FILE_ID
+    // https://drive.google.com/uc?id=FILE_ID
+    const patterns = [
+      /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/,
+      /drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/,
+      /drive\.google\.com\/uc\?id=([a-zA-Z0-9_-]+)/,
+    ];
+    
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
+    }
+    
+    return url; // Retornar como está se não encontrar padrão
+  };
+
   const handleCreateRoom = async () => {
     if (!roomName.trim()) {
       Alert.alert("Erro", "Digite um nome para a sala");
@@ -42,7 +70,7 @@ export default function CreateRoomScreen() {
     }
 
     if (!videoUrl.trim()) {
-      Alert.alert("Erro", "Digite a URL ou ID do vídeo");
+      Alert.alert("Erro", "Digite a URL do vídeo");
       return;
     }
 
@@ -51,12 +79,19 @@ export default function CreateRoomScreen() {
       return;
     }
 
+    // Processar URL baseado na plataforma
+    let processedVideoId = videoUrl.trim();
+    
+    if (selectedPlatform === "google-drive") {
+      processedVideoId = extractGoogleDriveId(videoUrl);
+    }
+
     createRoomMutation.mutate({
       name: roomName,
       videoTitle: videoTitle,
       platform: selectedPlatform,
       videoUrl: videoUrl,
-      videoId: videoUrl,
+      videoId: processedVideoId,
     });
   };
 
@@ -75,10 +110,11 @@ export default function CreateRoomScreen() {
         </View>
 
         <View className="gap-6">
+          {/* Nome da Sala */}
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">Nome da Sala</Text>
             <TextInput
-              placeholder="Ex: Filme Clássico"
+              placeholder="Ex: Sessão de Filme"
               placeholderTextColor={colors.muted}
               value={roomName}
               onChangeText={setRoomName}
@@ -90,10 +126,11 @@ export default function CreateRoomScreen() {
             />
           </View>
 
+          {/* Título do Vídeo */}
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">Título do Vídeo</Text>
             <TextInput
-              placeholder="Ex: Inception"
+              placeholder="Ex: Inception (2010)"
               placeholderTextColor={colors.muted}
               value={videoTitle}
               onChangeText={setVideoTitle}
@@ -105,59 +142,73 @@ export default function CreateRoomScreen() {
             />
           </View>
 
+          {/* Seleção de Plataforma */}
           <View>
-            <Text className="text-sm font-semibold text-foreground mb-2">Plataforma</Text>
+            <Text className="text-sm font-semibold text-foreground mb-2">Fonte do Vídeo</Text>
             <View className="gap-2">
               {PLATFORMS.map((platform) => (
                 <TouchableOpacity
                   key={platform.value}
                   onPress={() => setSelectedPlatform(platform.value)}
-                  className={`flex-row items-center p-3 rounded-lg border ${
+                  className={`flex-row items-center p-4 rounded-lg border ${
                     selectedPlatform === platform.value
-                      ? "bg-primary border-primary"
+                      ? "bg-primary/10 border-primary"
                       : "bg-surface border-border"
                   }`}
                   style={{
                     borderColor:
                       selectedPlatform === platform.value ? colors.primary : colors.border,
-                    backgroundColor:
-                      selectedPlatform === platform.value ? colors.primary : colors.surface,
                   }}
+                  activeOpacity={0.7}
                 >
-                  <Ionicons
-                    name="checkmark-circle"
-                    size={20}
-                    color={
-                      selectedPlatform === platform.value ? "white" : colors.muted
-                    }
-                  />
-                  <Text
-                    className={`ml-3 font-medium ${
-                      selectedPlatform === platform.value
-                        ? "text-white"
-                        : "text-foreground"
-                    }`}
+                  <View 
+                    className="w-10 h-10 rounded-full items-center justify-center mr-3"
+                    style={{ 
+                      backgroundColor: selectedPlatform === platform.value 
+                        ? colors.primary 
+                        : colors.surface 
+                    }}
                   >
-                    {platform.label}
-                  </Text>
+                    <Ionicons
+                      name={platform.icon as any}
+                      size={20}
+                      color={selectedPlatform === platform.value ? "white" : colors.muted}
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <Text
+                      className={`font-semibold ${
+                        selectedPlatform === platform.value
+                          ? "text-primary"
+                          : "text-foreground"
+                      }`}
+                    >
+                      {platform.label}
+                    </Text>
+                    <Text className="text-xs text-muted mt-0.5">
+                      {platform.description}
+                    </Text>
+                  </View>
+                  {selectedPlatform === platform.value && (
+                    <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
+                  )}
                 </TouchableOpacity>
               ))}
             </View>
           </View>
 
+          {/* URL do Vídeo */}
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">
-              {selectedPlatform === "youtube"
-                ? "ID do Vídeo YouTube"
-                : selectedPlatform === "google-drive"
-                  ? "Link do Google Drive"
-                  : "URL do Vídeo"}
+              {selectedPlatform === "google-drive"
+                ? "Link do Google Drive"
+                : "URL do Vídeo"}
             </Text>
             <TextInput
               placeholder={
-                selectedPlatform === "youtube"
-                  ? "Ex: dQw4w9WgXcQ"
-                  : "Ex: https://..."
+                selectedPlatform === "google-drive"
+                  ? "https://drive.google.com/file/d/..."
+                  : "https://exemplo.com/video.mp4"
               }
               placeholderTextColor={colors.muted}
               value={videoUrl}
@@ -168,34 +219,69 @@ export default function CreateRoomScreen() {
                 color: colors.foreground,
               }}
               multiline
+              autoCapitalize="none"
+              autoCorrect={false}
             />
             <Text className="text-xs text-muted mt-2">
-              {selectedPlatform === "youtube"
-                ? "Você pode encontrar o ID na URL: youtube.com/watch?v=ID"
-                : "Cole o link completo do vídeo"}
+              {selectedPlatform === "google-drive"
+                ? "Cole o link de compartilhamento do Google Drive"
+                : "Cole a URL direta do vídeo (MP4, WebM, M3U8)"}
             </Text>
           </View>
 
+          {/* Informação sobre sincronização */}
+          <View className="bg-primary/5 rounded-lg p-4 border border-primary/20">
+            <View className="flex-row items-start">
+              <Ionicons name="sync" size={20} color={colors.primary} />
+              <View className="ml-3 flex-1">
+                <Text className="text-sm font-semibold text-foreground">
+                  Sincronização em Tempo Real
+                </Text>
+                <Text className="text-xs text-muted mt-1">
+                  Todos os participantes assistirão ao vídeo sincronizados. 
+                  Quando alguém pausar ou avançar, todos verão a mesma cena.
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Dica sobre formatos suportados */}
           <View className="bg-surface rounded-lg p-4 border border-border">
-            <View className="flex-row">
-              <Ionicons name="information-circle" size={20} color={colors.primary} />
-              <Text className="text-xs text-muted ml-2 flex-1">
-                O vídeo será exibido em tempo real para todos os participantes da sala.
-              </Text>
+            <View className="flex-row items-start">
+              <Ionicons name="bulb" size={20} color={colors.warning} />
+              <View className="ml-3 flex-1">
+                <Text className="text-sm font-semibold text-foreground">
+                  Dica: Formatos Suportados
+                </Text>
+                <Text className="text-xs text-muted mt-1">
+                  • MP4, WebM, MOV - Vídeos comuns{"\n"}
+                  • M3U8, HLS - Streaming adaptativo{"\n"}
+                  • Google Drive - Vídeos compartilhados
+                </Text>
+              </View>
             </View>
           </View>
         </View>
 
+        {/* Botões de ação */}
         <View className="gap-3 mt-8">
           <TouchableOpacity
             onPress={handleCreateRoom}
             disabled={createRoomMutation.isPending}
-            className="bg-primary rounded-full py-4 items-center justify-center"
+            className="bg-primary rounded-full py-4 items-center justify-center flex-row gap-2"
             activeOpacity={0.8}
           >
-            <Text className="text-white font-semibold">
-              {createRoomMutation.isPending ? "Criando..." : "Criar Sala"}
-            </Text>
+            {createRoomMutation.isPending ? (
+              <>
+                <Ionicons name="hourglass" size={20} color="white" />
+                <Text className="text-white font-semibold">Criando...</Text>
+              </>
+            ) : (
+              <>
+                <Ionicons name="add-circle" size={20} color="white" />
+                <Text className="text-white font-semibold">Criar Sala</Text>
+              </>
+            )}
           </TouchableOpacity>
 
           <TouchableOpacity
