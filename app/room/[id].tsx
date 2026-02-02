@@ -100,6 +100,14 @@ export default function RoomScreen() {
     });
   };
 
+  const handlePlayPause = (playing: boolean) => {
+    setIsPlaying(playing);
+    updateVideoStateMutation.mutate({
+      roomId,
+      isPlaying: playing,
+    });
+  };
+
   const handleTimeUpdate = (time: number) => {
     setCurrentTime(time);
     setLastTimeUpdate(Date.now());
@@ -188,6 +196,7 @@ export default function RoomScreen() {
           title={room.videoTitle}
           isPlaying={isPlaying}
           currentTime={currentTime}
+          onPlayPause={handlePlayPause}
           onTimeUpdate={handleTimeUpdate}
         />
       </View>

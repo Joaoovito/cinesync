@@ -24,11 +24,16 @@ export default function HomeScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filteredRooms, setFilteredRooms] = useState<Room[]>([]);
 
+  // Buscar contagem real de participantes para cada sala
+  const participantCounts = trpc.useQueries((t) =>
+    (rooms || []).map((room: any) => t.participants.count({ roomId: room.id }))
+  );
+
   useEffect(() => {
     if (rooms) {
-      const withCounts = rooms.map((room: any) => ({
+      const withCounts = rooms.map((room: any, index: number) => ({
         ...room,
-        usersOnline: Math.floor(Math.random() * 5) + 1,
+        usersOnline: participantCounts[index]?.data || 0,
       }));
       setRoomsWithCounts(withCounts);
       if (searchQuery.trim()) {
@@ -43,7 +48,7 @@ export default function HomeScreen() {
         setFilteredRooms(withCounts);
       }
     }
-  }, [rooms, searchQuery]);
+  }, [rooms, searchQuery, participantCounts]);
 
   const handleSearch = (text: string) => {
     setSearchQuery(text);
