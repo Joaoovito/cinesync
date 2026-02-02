@@ -1,5 +1,5 @@
-import { ScrollView, Text, View, TouchableOpacity, TextInput, FlatList, Pressable, ActivityIndicator } from "react-native";
-import { useState, useEffect } from "react";
+import { Text, View, TouchableOpacity, TextInput, FlatList, Pressable, ActivityIndicator } from "react-native";
+import { useState, useMemo, useCallback } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,59 +18,45 @@ interface Room {
 export default function HomeScreen() {
   const router = useRouter();
   const colors = useColors();
-  const { user, isAuthenticated } = useAuth();
-  const { data: rooms, isLoading, refetch } = trpc.rooms.list.useQuery();
-  const [roomsWithCounts, setRoomsWithCounts] = useState<Room[]>([]);
+  const { isAuthenticated } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
-  const [filteredRooms, setFilteredRooms] = useState<Room[]>([]);
 
-  // Buscar contagem real de participantes para cada sala
-  const participantCounts = trpc.useQueries((t) =>
-    (rooms || []).map((room: any) => t.participants.count({ roomId: room.id }))
-  );
+  // Buscar salas com polling a cada 3 segundos
+  const { data: rooms, isLoading } = trpc.rooms.list.useQuery(undefined, {
+    refetchInterval: 3000,
+  });
 
-  useEffect(() => {
-    if (rooms) {
-      const withCounts = rooms.map((room: any, index: number) => ({
-        ...room,
-        usersOnline: participantCounts[index]?.data || 0,
-      }));
-      setRoomsWithCounts(withCounts);
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase();
-        setFilteredRooms(
-          withCounts.filter((room) =>
-            room.name.toLowerCase().includes(query) ||
-            room.videoTitle.toLowerCase().includes(query)
-          )
-        );
-      } else {
-        setFilteredRooms(withCounts);
-      }
-    }
-  }, [rooms, searchQuery, participantCounts]);
+  // Filtrar salas baseado na busca
+  const filteredRooms = useMemo(() => {
+    if (!rooms) return [];
+    
+    const roomsList = rooms.map((room: any) => ({
+      ...room,
+      usersOnline: 0, // Será atualizado quando implementarmos contagem real
+    }));
 
-  const handleSearch = (text: string) => {
+    if (!searchQuery.trim()) return roomsList;
+
+    const query = searchQuery.toLowerCase();
+    return roomsList.filter((room: Room) =>
+      room.name.toLowerCase().includes(query) ||
+      room.videoTitle.toLowerCase().includes(query)
+    );
+  }, [rooms, searchQuery]);
+
+  const handleSearch = useCallback((text: string) => {
     setSearchQuery(text);
-  };
+  }, []);
 
-  // Polling para atualizar salas a cada 2 segundos
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refetch();
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [refetch]);
-
-  const handleCreateRoom = () => {
+  const handleCreateRoom = useCallback(() => {
     if (!isAuthenticated) {
       router.push("/login");
       return;
     }
     router.push("/create-room");
-  };
+  }, [isAuthenticated, router]);
 
-  const handleEnterRoom = (roomId: number) => {
+  const handleEnterRoom = useCallback((roomId: number) => {
     if (!isAuthenticated) {
       router.push("/login");
       return;
@@ -79,9 +65,9 @@ export default function HomeScreen() {
       pathname: "/room/[id]",
       params: { id: roomId },
     });
-  };
+  }, [isAuthenticated, router]);
 
-  const renderRoomCard = ({ item }: { item: Room }) => (
+  const renderRoomCard = useCallback(({ item }: { item: Room }) => (
     <Pressable
       onPress={() => handleEnterRoom(item.id)}
       style={({ pressed }) => [
@@ -102,9 +88,7 @@ export default function HomeScreen() {
             </Text>
             <Text className="text-xs text-muted">{item.platform}</Text>
           </View>
-          <View className="bg-primary rounded-full px-2 py-1">
-            <Text className="text-xs font-semibold text-white">{item.usersOnline || 0}</Text>
-          </View>
+          <View className="bg-success rounded-full w-3 h-3" />
         </View>
 
         <View className="bg-background rounded-lg p-3">
@@ -115,7 +99,7 @@ export default function HomeScreen() {
         </View>
       </View>
     </Pressable>
-  );
+  ), [colors.border, handleEnterRoom]);
 
   return (
     <ScreenContainer className="p-4">
@@ -145,9 +129,7 @@ export default function HomeScreen() {
             style={{ color: colors.foreground }}
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery("")}
-              className="ml-2"
-            >
+            <TouchableOpacity onPress={() => setSearchQuery("")} className="ml-2">
               <Ionicons name="close-circle" size={18} color={colors.muted} />
             </TouchableOpacity>
           )}
@@ -165,10 +147,9 @@ export default function HomeScreen() {
             data={filteredRooms}
             renderItem={renderRoomCard}
             keyExtractor={(item) => item.id.toString()}
-            scrollEnabled={false}
-            contentContainerStyle={{ flexGrow: 1 }}
+            contentContainerStyle={{ flexGrow: 1, paddingBottom: 20 }}
             ListEmptyComponent={
-              <View className="flex-1 items-center justify-center">
+              <View className="flex-1 items-center justify-center py-12">
                 <Ionicons name="film" size={48} color={colors.muted} />
                 <Text className="text-muted text-center mt-4">Nenhuma sala disponível</Text>
                 <Text className="text-muted text-center text-sm mt-2">

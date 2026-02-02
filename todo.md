@@ -108,3 +108,9 @@
 - [x] Sincronização de vídeo entre usuários (play/pause/seek)
 - [x] Chat funcionando em tempo real
 - [x] Testar fluxo completo end-to-end
+
+## Melhorias do Player e Persistência
+- [x] Melhorar qualidade visual do player (controles, barra de progresso)
+- [x] Implementar persistência do tempo do vídeo mesmo sem usuários na sala
+- [x] Salvar currentTime automaticamente no banco de dados
+- [x] Carregar tempo salvo quando usuário entra na sala

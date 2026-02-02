@@ -1,5 +1,5 @@
-import { ScrollView, Text, View, TouchableOpacity, TextInput, FlatList, Pressable, ActivityIndicator } from "react-native";
-import { useState, useEffect } from "react";
+import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,40 +26,66 @@ export default function RoomScreen() {
   const { user } = useAuth();
   const roomId = Number(id);
 
+  // Queries
   const { data: room, isLoading: roomLoading } = trpc.rooms.get.useQuery({ id: roomId });
   const { data: messages, refetch: refetchMessages } = trpc.chat.messages.useQuery({
     roomId,
     limit: 50,
-  });
-  const { data: participantCount } = trpc.participants.count.useQuery({ roomId });
-  const { data: videoState, refetch: refetchVideoState } = trpc.rooms.getVideoState.useQuery({ roomId });
+  }, { refetchInterval: 2000 });
+  const { data: participantCount } = trpc.participants.count.useQuery({ roomId }, { refetchInterval: 3000 });
+  const { data: videoState, refetch: refetchVideoState } = trpc.rooms.getVideoState.useQuery({ roomId }, { refetchInterval: 1500 });
 
-  const [newMessage, setNewMessage] = useState("");
-  const [isPlaying, setIsPlaying] = useState(videoState?.isPlaying || false);
-  const [currentTime, setCurrentTime] = useState(videoState?.currentTime || 0);
+  // State
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [lastTimeUpdate, setLastTimeUpdate] = useState(0);
   const [notification, setNotification] = useState<{ message: string; type: NotificationType } | null>(null);
-  const [previousParticipantCount, setPreviousParticipantCount] = useState(participantCount || 0);
+  
+  // Refs para evitar loops
+  const lastSavedTime = useRef(0);
+  const previousParticipantCount = useRef<number | undefined>(undefined);
+  const isInitialized = useRef(false);
 
+  // Mutations
   const sendMessageMutation = trpc.chat.send.useMutation({
     onSuccess: () => {
-      setNewMessage("");
       refetchMessages();
     },
   });
 
   const updateVideoStateMutation = trpc.rooms.updateVideoState.useMutation();
 
-  // Polling para sincronização de vídeo em tempo real
+  // Inicializar estado do vídeo quando carregar da sala
   useEffect(() => {
-    const interval = setInterval(() => {
-      refetchVideoState();
-      refetchMessages();
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [refetchVideoState, refetchMessages]);
+    if (videoState && !isInitialized.current) {
+      console.log("[Room] Inicializando com estado salvo:", videoState);
+      setIsPlaying(videoState.isPlaying ?? false);
+      setCurrentTime(videoState.currentTime ?? 0);
+      lastSavedTime.current = videoState.currentTime ?? 0;
+      isInitialized.current = true;
+    }
+  }, [videoState]);
 
+  // Sincronizar estado do vídeo quando mudar no servidor (outros usuários)
+  useEffect(() => {
+    if (videoState && isInitialized.current) {
+      // Sincronizar play/pause
+      if (videoState.isPlaying !== null && videoState.isPlaying !== isPlaying) {
+        setIsPlaying(videoState.isPlaying);
+      }
+      
+      // Sincronizar tempo se diferença for maior que 3 segundos
+      if (videoState.currentTime !== null) {
+        const diff = Math.abs(videoState.currentTime - currentTime);
+        if (diff > 3) {
+          console.log("[Room] Sincronizando tempo:", videoState.currentTime);
+          setCurrentTime(videoState.currentTime);
+        }
+      }
+    }
+  }, [videoState?.isPlaying, videoState?.currentTime]);
+
+  // Formatar mensagens do chat
   useEffect(() => {
     if (messages) {
       const formatted = messages.map((msg: any) => ({
@@ -71,81 +97,89 @@ export default function RoomScreen() {
     }
   }, [messages, user?.id]);
 
+  // Notificações de entrada/saída
   useEffect(() => {
-    if (videoState) {
-      if (videoState.isPlaying !== null) {
-        setIsPlaying(videoState.isPlaying);
+    if (participantCount !== undefined) {
+      if (previousParticipantCount.current !== undefined) {
+        if (participantCount > previousParticipantCount.current) {
+          setNotification({
+            message: `Um novo usuário entrou na sala`,
+            type: "user-joined",
+          });
+        } else if (participantCount < previousParticipantCount.current) {
+          setNotification({
+            message: `Um usuário saiu da sala`,
+            type: "user-left",
+          });
+        }
       }
-      if (videoState.currentTime !== null) {
-        setCurrentTime(videoState.currentTime);
-      }
+      previousParticipantCount.current = participantCount;
     }
-  }, [videoState]);
+  }, [participantCount]);
 
-  const handleSendMessage = () => {
-    if (!newMessage.trim()) return;
-
-    sendMessageMutation.mutate({
-      roomId,
-      message: newMessage,
-    });
-  };
-
-  const handleTogglePlay = () => {
-    const newState = !isPlaying;
-    setIsPlaying(newState);
-    updateVideoStateMutation.mutate({
-      roomId,
-      isPlaying: newState,
-    });
-  };
-
-  const handlePlayPause = (playing: boolean) => {
+  // Handler para play/pause
+  const handlePlayPause = useCallback((playing: boolean) => {
+    console.log("[Room] Play/Pause:", playing);
     setIsPlaying(playing);
+    
+    // Salvar no banco de dados para sincronizar com outros usuários
     updateVideoStateMutation.mutate({
       roomId,
       isPlaying: playing,
+      currentTime: Math.floor(currentTime),
     });
-  };
+  }, [roomId, currentTime, updateVideoStateMutation]);
 
-  const handleTimeUpdate = (time: number) => {
+  // Handler para atualização de tempo
+  const handleTimeUpdate = useCallback((time: number) => {
     setCurrentTime(time);
-    setLastTimeUpdate(Date.now());
-    if (Date.now() - lastTimeUpdate > 5000) {
+    
+    // Salvar no banco de dados a cada 3 segundos para persistência
+    const timeDiff = Math.abs(time - lastSavedTime.current);
+    if (timeDiff >= 3) {
+      console.log("[Room] Salvando tempo:", Math.floor(time));
+      lastSavedTime.current = time;
       updateVideoStateMutation.mutate({
         roomId,
         currentTime: Math.floor(time),
       });
     }
-  };
+  }, [roomId, updateVideoStateMutation]);
 
-  useEffect(() => {
-    if (participantCount !== undefined && previousParticipantCount !== undefined) {
-      if (participantCount > previousParticipantCount) {
-        setNotification({
-          message: `Um novo usuário entrou na sala`,
-          type: "user-joined",
-        });
-      } else if (participantCount < previousParticipantCount) {
-        setNotification({
-          message: `Um usuário saiu da sala`,
-          type: "user-left",
-        });
-      }
-      setPreviousParticipantCount(participantCount);
-    }
-  }, [participantCount, previousParticipantCount]);
+  // Handler para enviar mensagem
+  const handleSendMessage = useCallback((message: string) => {
+    if (!message.trim()) return;
+    sendMessageMutation.mutate({
+      roomId,
+      message: message.trim(),
+    });
+  }, [roomId, sendMessageMutation]);
 
-  const handleLeaveRoom = () => {
+  // Estado para nova mensagem
+  const [newMessage, setNewMessage] = useState("");
+
+  const onSendMessage = useCallback(() => {
+    if (!newMessage.trim()) return;
+    handleSendMessage(newMessage);
+    setNewMessage("");
+  }, [newMessage, handleSendMessage]);
+
+  // Handler para sair da sala
+  const handleLeaveRoom = useCallback(() => {
+    // Salvar tempo atual antes de sair
+    updateVideoStateMutation.mutate({
+      roomId,
+      currentTime: Math.floor(currentTime),
+      isPlaying: false,
+    });
     router.back();
-  };
-
-
+  }, [roomId, currentTime, updateVideoStateMutation, router]);
 
   if (roomLoading) {
     return (
       <ScreenContainer className="items-center justify-center">
         <ActivityIndicator size="large" color={colors.primary} />
+        <Text className="text-muted mt-4">Carregando sala...</Text>
       </ScreenContainer>
     );
   }
@@ -153,13 +187,21 @@ export default function RoomScreen() {
   if (!room) {
     return (
       <ScreenContainer className="items-center justify-center">
-        <Text className="text-foreground">Sala não encontrada</Text>
+        <Ionicons name="alert-circle" size={48} color={colors.error} />
+        <Text className="text-foreground mt-4">Sala não encontrada</Text>
+        <TouchableOpacity 
+          onPress={() => router.back()}
+          className="mt-4 bg-primary px-6 py-2 rounded-full"
+        >
+          <Text className="text-white font-semibold">Voltar</Text>
+        </TouchableOpacity>
       </ScreenContainer>
     );
   }
 
   return (
     <ScreenContainer className="p-0 flex-1">
+      {/* Notificações */}
       {notification && (
         <NotificationToast
           message={notification.message}
@@ -168,27 +210,33 @@ export default function RoomScreen() {
           onDismiss={() => setNotification(null)}
         />
       )}
+      
+      {/* Header */}
       <View
         className="flex-row items-center justify-between px-4 py-3 border-b border-border"
         style={{ borderColor: colors.border }}
       >
         <View className="flex-1">
-          <Text className="text-lg font-semibold text-foreground">{room.name}</Text>
+          <Text className="text-lg font-semibold text-foreground" numberOfLines={1}>
+            {room.name}
+          </Text>
           <View className="flex-row items-center mt-1">
-            <Ionicons name="people" size={14} color={colors.success} />
-            <Text className="text-xs text-muted ml-1">
-              {participantCount || 0} pessoas online
+            <View className="w-2 h-2 rounded-full bg-success mr-2" />
+            <Text className="text-xs text-muted">
+              {participantCount || 0} {participantCount === 1 ? "pessoa" : "pessoas"} online
             </Text>
           </View>
         </View>
         <TouchableOpacity
           onPress={handleLeaveRoom}
           className="w-10 h-10 rounded-full bg-error/10 items-center justify-center"
+          activeOpacity={0.7}
         >
           <Ionicons name="exit" size={20} color={colors.error} />
         </TouchableOpacity>
       </View>
 
+      {/* Player de Vídeo */}
       <View className="px-4 py-3">
         <VideoPlayerSync
           videoId={room.videoId}
@@ -201,31 +249,35 @@ export default function RoomScreen() {
         />
       </View>
 
-      <View className="flex-row items-center justify-between px-4 py-3 bg-surface border-b border-border">
+      {/* Controles de Vídeo */}
+      <View 
+        className="flex-row items-center justify-between px-4 py-3 bg-surface border-b border-border"
+        style={{ borderColor: colors.border }}
+      >
         <TouchableOpacity
-          onPress={handleTogglePlay}
+          onPress={() => handlePlayPause(!isPlaying)}
           className="flex-row items-center gap-2"
+          activeOpacity={0.7}
         >
           <Ionicons
             name={isPlaying ? "pause-circle" : "play-circle"}
-            size={24}
+            size={28}
             color={colors.primary}
           />
-          <Text className="text-sm text-foreground">
+          <Text className="text-sm font-medium text-foreground">
             {isPlaying ? "Reproduzindo" : "Pausado"}
           </Text>
         </TouchableOpacity>
 
-        <View className="flex-row items-center gap-3">
-          <TouchableOpacity>
-            <Ionicons name="volume-high" size={20} color={colors.foreground} />
-          </TouchableOpacity>
-          <TouchableOpacity>
-            <Ionicons name="expand" size={20} color={colors.foreground} />
-          </TouchableOpacity>
+        <View className="flex-row items-center gap-4">
+          <View className="flex-row items-center gap-1">
+            <Ionicons name="sync" size={14} color={colors.success} />
+            <Text className="text-xs text-muted">Sincronizado</Text>
+          </View>
         </View>
       </View>
 
+      {/* Chat */}
       <ChatRoom
         messages={chatMessages}
         onSendMessage={handleSendMessage}
