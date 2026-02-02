@@ -94,3 +94,4 @@
 - [x] Bug: Buscador de salas não funciona
 - [x] Bug: Salas criadas não aparecem até reiniciar o app
 - [x] Feature: Sincronização de vídeo em tempo real entre usuários (Polling)
+- [x] Feature: Sincronizar tempo do vídeo (currentTime) para novos usuários

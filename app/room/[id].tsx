@@ -34,7 +34,9 @@ export default function RoomScreen() {
 
   const [newMessage, setNewMessage] = useState("");
   const [isPlaying, setIsPlaying] = useState(videoState?.isPlaying || false);
+  const [currentTime, setCurrentTime] = useState(videoState?.currentTime || 0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [lastTimeUpdate, setLastTimeUpdate] = useState(0);
 
   const sendMessageMutation = trpc.chat.send.useMutation({
     onSuccess: () => {
@@ -66,8 +68,13 @@ export default function RoomScreen() {
   }, [messages, user?.id]);
 
   useEffect(() => {
-    if (videoState && videoState.isPlaying !== null) {
-      setIsPlaying(videoState.isPlaying);
+    if (videoState) {
+      if (videoState.isPlaying !== null) {
+        setIsPlaying(videoState.isPlaying);
+      }
+      if (videoState.currentTime !== null) {
+        setCurrentTime(videoState.currentTime);
+      }
     }
   }, [videoState]);
 
@@ -87,6 +94,17 @@ export default function RoomScreen() {
       roomId,
       isPlaying: newState,
     });
+  };
+
+  const handleTimeUpdate = (time: number) => {
+    setCurrentTime(time);
+    setLastTimeUpdate(Date.now());
+    if (Date.now() - lastTimeUpdate > 5000) {
+      updateVideoStateMutation.mutate({
+        roomId,
+        currentTime: Math.floor(time),
+      });
+    }
   };
 
   const handleLeaveRoom = () => {
@@ -170,7 +188,8 @@ export default function RoomScreen() {
           platform={room.platform}
           title={room.videoTitle}
           isPlaying={isPlaying}
-          currentTime={room.currentTime}
+          currentTime={currentTime}
+          onTimeUpdate={handleTimeUpdate}
         />
       </View>
 
