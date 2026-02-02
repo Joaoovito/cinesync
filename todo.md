@@ -95,3 +95,4 @@
 - [x] Bug: Salas criadas não aparecem até reiniciar o app
 - [x] Feature: Sincronização de vídeo em tempo real entre usuários (Polling)
 - [x] Feature: Sincronizar tempo do vídeo (currentTime) para novos usuários
+- [x] Feature: Criar player de vídeo próprio com expo-video para sincronização completa

@@ -6,7 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
-import { VideoPlayer } from "@/components/video-player";
+import { VideoPlayerSync } from "@/components/video-player-sync";
 
 interface ChatMessage {
   id: number;
@@ -183,7 +183,7 @@ export default function RoomScreen() {
       </View>
 
       <View className="px-4 py-3">
-        <VideoPlayer
+        <VideoPlayerSync
           videoId={room.videoId}
           platform={room.platform}
           title={room.videoTitle}
