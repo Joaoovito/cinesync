@@ -121,3 +121,5 @@
 - [x] Suportar URLs diretas de vídeo (MP4, WebM, HLS)
 - [x] Atualizar criação de sala para aceitar URLs diretas
 - [x] Testar sincronização entre múltiplos usuários
+
+- [x] Bug: Player dá erro ao carregar vídeo e fica em loop infinito ao tentar novamente
