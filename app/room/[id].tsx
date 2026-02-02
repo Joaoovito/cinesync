@@ -7,6 +7,7 @@ import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { VideoPlayerSync } from "@/components/video-player-sync";
+import { ChatRoom } from "@/components/chat-room";
 
 interface ChatMessage {
   id: number;
@@ -111,37 +112,7 @@ export default function RoomScreen() {
     router.back();
   };
 
-  const renderChatMessage = ({ item }: { item: ChatMessage }) => (
-    <View className={`mb-3 flex-row ${item.isOwn ? "justify-end" : "justify-start"}`}>
-      {!item.isOwn && (
-        <View className="w-8 h-8 rounded-full bg-primary items-center justify-center mr-2">
-          <Text className="text-white text-xs font-bold">
-            {item.userName?.charAt(0).toUpperCase()}
-          </Text>
-        </View>
-      )}
 
-      <View
-        className={`max-w-xs rounded-lg px-3 py-2 ${
-          item.isOwn ? "bg-primary" : "bg-surface border border-border"
-        }`}
-        style={!item.isOwn ? { borderColor: colors.border } : {}}
-      >
-        {!item.isOwn && (
-          <Text className="text-xs font-semibold text-muted mb-1">{item.userName}</Text>
-        )}
-        <Text className={`text-sm ${item.isOwn ? "text-white" : "text-foreground"}`}>
-          {item.message}
-        </Text>
-        <Text className={`text-xs mt-1 ${item.isOwn ? "text-blue-100" : "text-muted"}`}>
-          {new Date(item.createdAt).toLocaleTimeString("pt-BR", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </Text>
-      </View>
-    </View>
-  );
 
   if (roomLoading) {
     return (
@@ -218,42 +189,12 @@ export default function RoomScreen() {
         </View>
       </View>
 
-      <View className="flex-1 flex-row bg-surface">
-        <View className="flex-1 px-4 py-3">
-          <FlatList
-            data={chatMessages}
-            renderItem={renderChatMessage}
-            keyExtractor={(item) => item.id.toString()}
-            contentContainerStyle={{ paddingVertical: 8 }}
-            inverted
-          />
-        </View>
-      </View>
-
-      <View
-        className="flex-row items-center gap-2 px-4 py-3 border-t border-border bg-surface"
-        style={{ borderColor: colors.border }}
-      >
-        <TextInput
-          placeholder="Digite uma mensagem..."
-          placeholderTextColor={colors.muted}
-          value={newMessage}
-          onChangeText={setNewMessage}
-          className="flex-1 bg-background rounded-full px-4 py-2 text-foreground border border-border"
-          style={{
-            borderColor: colors.border,
-            color: colors.foreground,
-          }}
-        />
-        <TouchableOpacity
-          onPress={handleSendMessage}
-          disabled={!newMessage.trim() || sendMessageMutation.isPending}
-          className="w-10 h-10 rounded-full bg-primary items-center justify-center"
-          activeOpacity={0.8}
-        >
-          <Ionicons name="send" size={18} color="white" />
-        </TouchableOpacity>
-      </View>
+      <ChatRoom
+        messages={chatMessages}
+        onSendMessage={handleSendMessage}
+        isSending={sendMessageMutation.isPending}
+        currentUserId={user?.id}
+      />
     </ScreenContainer>
   );
 }

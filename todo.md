@@ -97,3 +97,4 @@
 - [x] Feature: Sincronizar tempo do vídeo (currentTime) para novos usuários
 - [x] Feature: Criar player de vídeo próprio com expo-video para sincronização completa
 - [x] Bug: Player de vídeo não funciona (usuário reportou)
+- [x] Feature: Otimizar e corrigir chat das salas
