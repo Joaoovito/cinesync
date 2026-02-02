@@ -1,4 +1,4 @@
-import { View, Text, Platform, ActivityIndicator } from "react-native";
+import { View, Text, ActivityIndicator, Platform } from "react-native";
 import { useRef, useEffect, useState } from "react";
 import { useColors } from "@/hooks/use-colors";
 
