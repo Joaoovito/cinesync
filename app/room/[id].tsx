@@ -8,6 +8,7 @@ import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
 import { VideoPlayerSync } from "@/components/video-player-sync";
 import { ChatRoom } from "@/components/chat-room";
+import { NotificationToast, type NotificationType } from "@/components/notification-toast";
 
 interface ChatMessage {
   id: number;
@@ -38,6 +39,8 @@ export default function RoomScreen() {
   const [currentTime, setCurrentTime] = useState(videoState?.currentTime || 0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [lastTimeUpdate, setLastTimeUpdate] = useState(0);
+  const [notification, setNotification] = useState<{ message: string; type: NotificationType } | null>(null);
+  const [previousParticipantCount, setPreviousParticipantCount] = useState(participantCount || 0);
 
   const sendMessageMutation = trpc.chat.send.useMutation({
     onSuccess: () => {
@@ -108,6 +111,23 @@ export default function RoomScreen() {
     }
   };
 
+  useEffect(() => {
+    if (participantCount !== undefined && previousParticipantCount !== undefined) {
+      if (participantCount > previousParticipantCount) {
+        setNotification({
+          message: `Um novo usuário entrou na sala`,
+          type: "user-joined",
+        });
+      } else if (participantCount < previousParticipantCount) {
+        setNotification({
+          message: `Um usuário saiu da sala`,
+          type: "user-left",
+        });
+      }
+      setPreviousParticipantCount(participantCount);
+    }
+  }, [participantCount, previousParticipantCount]);
+
   const handleLeaveRoom = () => {
     router.back();
   };
@@ -132,6 +152,14 @@ export default function RoomScreen() {
 
   return (
     <ScreenContainer className="p-0 flex-1">
+      {notification && (
+        <NotificationToast
+          message={notification.message}
+          type={notification.type}
+          duration={3000}
+          onDismiss={() => setNotification(null)}
+        />
+      )}
       <View
         className="flex-row items-center justify-between px-4 py-3 border-b border-border"
         style={{ borderColor: colors.border }}

@@ -98,3 +98,4 @@
 - [x] Feature: Criar player de vídeo próprio com expo-video para sincronização completa
 - [x] Bug: Player de vídeo não funciona (usuário reportou)
 - [x] Feature: Otimizar e corrigir chat das salas
+- [x] Feature: Notificações em tempo real para entrada/saída de usuários
