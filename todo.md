@@ -91,3 +91,6 @@
 - [x] Bug: Criação de sala ainda não está funcionando (usuário reportou)
 - [x] Bug: Player de vídeo não roda (mostrar vídeo real do YouTube)
 - [x] Bug: Salas criadas não aparecem na lista (usuário reportou)
+- [x] Bug: Buscador de salas não funciona
+- [x] Bug: Salas criadas não aparecem até reiniciar o app
+- [x] Feature: Sincronização de vídeo em tempo real entre usuários (Polling)

@@ -30,7 +30,7 @@ export default function RoomScreen() {
     limit: 50,
   });
   const { data: participantCount } = trpc.participants.count.useQuery({ roomId });
-  const { data: videoState } = trpc.rooms.getVideoState.useQuery({ roomId });
+  const { data: videoState, refetch: refetchVideoState } = trpc.rooms.getVideoState.useQuery({ roomId });
 
   const [newMessage, setNewMessage] = useState("");
   const [isPlaying, setIsPlaying] = useState(videoState?.isPlaying || false);
@@ -44,6 +44,15 @@ export default function RoomScreen() {
   });
 
   const updateVideoStateMutation = trpc.rooms.updateVideoState.useMutation();
+
+  // Polling para sincronização de vídeo em tempo real
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetchVideoState();
+      refetchMessages();
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [refetchVideoState, refetchMessages]);
 
   useEffect(() => {
     if (messages) {

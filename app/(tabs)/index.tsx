@@ -1,4 +1,4 @@
-import { ScrollView, Text, View, TouchableOpacity, FlatList, Pressable, ActivityIndicator } from "react-native";
+import { ScrollView, Text, View, TouchableOpacity, TextInput, FlatList, Pressable, ActivityIndicator } from "react-native";
 import { useState, useEffect } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { useRouter } from "expo-router";
@@ -21,17 +21,41 @@ export default function HomeScreen() {
   const { user, isAuthenticated } = useAuth();
   const { data: rooms, isLoading, refetch } = trpc.rooms.list.useQuery();
   const [roomsWithCounts, setRoomsWithCounts] = useState<Room[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filteredRooms, setFilteredRooms] = useState<Room[]>([]);
 
   useEffect(() => {
     if (rooms) {
-      setRoomsWithCounts(
-        rooms.map((room: any) => ({
-          ...room,
-          usersOnline: Math.floor(Math.random() * 5) + 1,
-        }))
-      );
+      const withCounts = rooms.map((room: any) => ({
+        ...room,
+        usersOnline: Math.floor(Math.random() * 5) + 1,
+      }));
+      setRoomsWithCounts(withCounts);
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        setFilteredRooms(
+          withCounts.filter((room) =>
+            room.name.toLowerCase().includes(query) ||
+            room.videoTitle.toLowerCase().includes(query)
+          )
+        );
+      } else {
+        setFilteredRooms(withCounts);
+      }
     }
-  }, [rooms]);
+  }, [rooms, searchQuery]);
+
+  const handleSearch = (text: string) => {
+    setSearchQuery(text);
+  };
+
+  // Polling para atualizar salas a cada 2 segundos
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refetch();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [refetch]);
 
   const handleCreateRoom = () => {
     if (!isAuthenticated) {
@@ -105,9 +129,23 @@ export default function HomeScreen() {
       </View>
 
       <View className="mb-6">
-        <View className="flex-row items-center bg-surface rounded-lg px-4 py-3 border border-border">
+        <View className="flex-row items-center bg-surface rounded-lg px-4 py-3 border border-border" style={{ borderColor: colors.border }}>
           <Ionicons name="search" size={18} color={colors.muted} />
-          <Text className="text-muted ml-2 flex-1">Buscar salas...</Text>
+          <TextInput
+            placeholder="Buscar salas..."
+            placeholderTextColor={colors.muted}
+            value={searchQuery}
+            onChangeText={handleSearch}
+            className="text-foreground ml-2 flex-1"
+            style={{ color: colors.foreground }}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery("")}
+              className="ml-2"
+            >
+              <Ionicons name="close-circle" size={18} color={colors.muted} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -119,7 +157,7 @@ export default function HomeScreen() {
           </View>
         ) : (
           <FlatList
-            data={roomsWithCounts}
+            data={filteredRooms}
             renderItem={renderRoomCard}
             keyExtractor={(item) => item.id.toString()}
             scrollEnabled={false}
