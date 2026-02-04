@@ -48,24 +48,39 @@ export function VideoPlayerSync({
 
   useKeepAwake();
 
-  // Determinar a URL do vídeo
+  // Determinar a URL do vídeo - aceita qualquer URL
   const getVideoUrl = useCallback((): string => {
-    // Se já é uma URL completa
+    // Se já é uma URL completa, usar diretamente
     if (videoId.startsWith("http://") || videoId.startsWith("https://")) {
       return videoId;
     }
 
-    // YouTube não é suportado diretamente
+    // YouTube - tentar extrair ID e usar embed (não funciona para sync, mas mostra algo)
     if (platform === "youtube") {
+      // Extrair ID do YouTube se for URL
+      const youtubeMatch = videoId.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\s]+)/);
+      if (youtubeMatch) {
+        return `https://www.youtube.com/embed/${youtubeMatch[1]}?enablejsapi=1&autoplay=1`;
+      }
+      // Se for só o ID
+      if (videoId.length === 11) {
+        return `https://www.youtube.com/embed/${videoId}?enablejsapi=1&autoplay=1`;
+      }
       return "";
     }
 
-    // Google Drive
+    // Google Drive - converter para URL de download direto
     if (platform === "google-drive") {
+      // Se for URL completa do Drive
+      const driveMatch = videoId.match(/\/d\/([^/]+)/);
+      if (driveMatch) {
+        return `https://drive.google.com/uc?export=download&id=${driveMatch[1]}`;
+      }
+      // Se for só o ID
       return `https://drive.google.com/uc?export=download&id=${videoId}`;
     }
 
-    // URL direta
+    // URL direta - retornar como está
     return videoId;
   }, [videoId, platform]);
 
@@ -248,19 +263,52 @@ export function VideoPlayerSync({
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
-  // YouTube não suportado
-  if (!videoUrl && platform === "youtube") {
+  // YouTube - usar iframe (sem sincronização real)
+  if (platform === "youtube" && videoUrl) {
+    return (
+      <View
+        className="w-full bg-black rounded-xl overflow-hidden"
+        style={{ aspectRatio: 16/9 }}
+      >
+        {Platform.OS === "web" ? (
+          <iframe
+            src={videoUrl}
+            style={{
+              width: "100%",
+              height: "100%",
+              border: "none",
+            }}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+          />
+        ) : (
+          <View className="flex-1 items-center justify-center">
+            <Ionicons name="logo-youtube" size={64} color="#FF0000" />
+            <Text className="text-white text-center mt-4 font-bold text-lg">
+              YouTube
+            </Text>
+            <Text className="text-gray-400 text-sm mt-2 text-center px-6">
+              Abra no navegador para assistir
+            </Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  // Sem URL válida
+  if (!videoUrl) {
     return (
       <View
         className="w-full bg-black rounded-xl items-center justify-center"
         style={{ aspectRatio: 16/9 }}
       >
-        <Ionicons name="logo-youtube" size={64} color="#FF0000" />
+        <Ionicons name="videocam-off" size={64} color="#666" />
         <Text className="text-white text-center mt-4 font-bold text-lg">
-          YouTube não suportado
+          URL de vídeo inválida
         </Text>
         <Text className="text-gray-400 text-sm mt-2 text-center px-6 leading-5">
-          Para sincronização em tempo real, use uma URL direta de vídeo (MP4, WebM) ou Google Drive.
+          Cole uma URL direta de vídeo (MP4, WebM, etc.)
         </Text>
       </View>
     );
@@ -270,28 +318,31 @@ export function VideoPlayerSync({
   if (playerState === "error") {
     return (
       <View
-        className="w-full bg-black rounded-xl items-center justify-center"
+        className="w-full bg-black rounded-xl items-center justify-center p-4"
         style={{ aspectRatio: 16/9 }}
       >
-        <Ionicons name="alert-circle" size={64} color={colors.error} />
-        <Text className="text-white text-center mt-4 font-bold text-lg">
+        <Ionicons name="alert-circle" size={48} color={colors.error} />
+        <Text className="text-white text-center mt-3 font-bold text-base">
           Erro ao carregar vídeo
         </Text>
-        <Text className="text-gray-400 text-sm mt-2 text-center px-6 leading-5">
-          {errorMessage || "Verifique se a URL do vídeo é válida e acessível."}
+        <Text className="text-gray-400 text-xs mt-2 text-center px-4 leading-4">
+          {errorMessage || "Verifique se a URL é válida e acessível."}
+        </Text>
+        <Text className="text-gray-500 text-xs mt-2 text-center px-4 leading-4">
+          URL: {videoUrl.substring(0, 50)}...
         </Text>
         <Pressable
           onPress={retryLoading}
           style={({ pressed }) => ({
-            marginTop: 16,
+            marginTop: 12,
             backgroundColor: colors.primary,
-            paddingHorizontal: 24,
-            paddingVertical: 12,
-            borderRadius: 24,
+            paddingHorizontal: 20,
+            paddingVertical: 10,
+            borderRadius: 20,
             opacity: pressed ? 0.8 : 1,
           })}
         >
-          <Text className="text-white font-semibold">Tentar novamente</Text>
+          <Text className="text-white font-semibold text-sm">Tentar novamente</Text>
         </Pressable>
       </View>
     );
@@ -325,7 +376,8 @@ export function VideoPlayerSync({
             backgroundColor: "#000",
           }}
           playsInline
-          preload="metadata"
+          preload="auto"
+          crossOrigin="anonymous"
           onLoadStart={() => setPlayerState("loading")}
           onLoadedMetadata={(e) => {
             const video = e.target as HTMLVideoElement;
@@ -361,11 +413,12 @@ export function VideoPlayerSync({
             if (video.error) {
               switch (video.error.code) {
                 case 1: msg = "Carregamento abortado"; break;
-                case 2: msg = "Erro de rede"; break;
-                case 3: msg = "Erro de decodificação"; break;
-                case 4: msg = "Formato não suportado"; break;
+                case 2: msg = "Erro de rede - verifique sua conexão"; break;
+                case 3: msg = "Erro de decodificação - arquivo corrompido"; break;
+                case 4: msg = "Formato não suportado ou CORS bloqueado"; break;
               }
             }
+            console.error("[Player] Erro:", video.error, "URL:", videoUrl);
             setErrorMessage(msg);
             setPlayerState("error");
           }}
@@ -406,8 +459,8 @@ export function VideoPlayerSync({
           </div>
         )}
 
-        {/* Play button central (quando pausado) */}
-        {playerState === "paused" && showControls && (
+        {/* Play button central (quando pausado ou pronto) */}
+        {(playerState === "paused" || playerState === "ready") && showControls && (
           <div
             onClick={(e) => {
               e.stopPropagation();
@@ -421,24 +474,23 @@ export function VideoPlayerSync({
               width: 72,
               height: 72,
               borderRadius: 36,
-              backgroundColor: "rgba(255,255,255,0.2)",
+              backgroundColor: "rgba(99, 102, 241, 0.9)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
               zIndex: 15,
               transition: "transform 0.2s, background-color 0.2s",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.3)";
               e.currentTarget.style.transform = "translate(-50%, -50%) scale(1.1)";
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.2)";
               e.currentTarget.style.transform = "translate(-50%, -50%) scale(1)";
             }}
           >
-            <Ionicons name="play" size={36} color="#fff" />
+            <Ionicons name="play" size={36} color="#fff" style={{ marginLeft: 4 }} />
           </div>
         )}
 
@@ -449,42 +501,50 @@ export function VideoPlayerSync({
             bottom: 0,
             left: 0,
             right: 0,
-            background: "linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.5) 50%, transparent 100%)",
-            padding: "40px 16px 12px 16px",
+            background: "linear-gradient(transparent, rgba(0,0,0,0.9))",
+            padding: "40px 16px 16px",
             opacity: showControls ? 1 : 0,
             transition: "opacity 0.3s",
             zIndex: 10,
           }}
         >
-          {/* Título */}
-          <div style={{ marginBottom: 8 }}>
-            <Text style={{ color: "#fff", fontSize: 12, opacity: 0.8 }} numberOfLines={1}>
-              {title}
-            </Text>
-          </div>
-
           {/* Barra de progresso */}
           <div
-            onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const x = e.clientX - rect.left;
-              const percentage = (x / rect.width) * 100;
-              seekToPercentage(Math.max(0, Math.min(100, percentage)));
-            }}
             style={{
+              width: "100%",
               height: 6,
               backgroundColor: "rgba(255,255,255,0.2)",
               borderRadius: 3,
-              cursor: "pointer",
               marginBottom: 12,
+              cursor: "pointer",
               position: "relative",
             }}
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const percentage = ((e.clientX - rect.left) / rect.width) * 100;
+              seekToPercentage(percentage);
+            }}
           >
-            {/* Progresso */}
+            {/* Progresso carregado (buffer) */}
             <div
               style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
                 height: "100%",
-                width: `${Math.min(progress, 100)}%`,
+                width: `${Math.min(progress + 10, 100)}%`,
+                backgroundColor: "rgba(255,255,255,0.3)",
+                borderRadius: 3,
+              }}
+            />
+            {/* Progresso atual */}
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                height: "100%",
+                width: `${progress}%`,
                 backgroundColor: colors.primary,
                 borderRadius: 3,
                 transition: "width 0.1s linear",
@@ -495,111 +555,119 @@ export function VideoPlayerSync({
               style={{
                 position: "absolute",
                 top: "50%",
-                left: `${Math.min(progress, 100)}%`,
+                left: `${progress}%`,
                 transform: "translate(-50%, -50%)",
                 width: 14,
                 height: 14,
                 borderRadius: 7,
-                backgroundColor: colors.primary,
+                backgroundColor: "#fff",
                 boxShadow: "0 2px 4px rgba(0,0,0,0.3)",
               }}
             />
           </div>
 
           {/* Controles inferiores */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            {/* Lado esquerdo */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            {/* Esquerda: Play, Skip, Tempo */}
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               {/* Play/Pause */}
-              <div
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
                   togglePlayPause();
                 }}
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 20,
-                  backgroundColor: "rgba(255,255,255,0.2)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 4,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: "pointer",
                 }}
               >
-                <Ionicons 
-                  name={playerState === "playing" ? "pause" : "play"} 
-                  size={22} 
-                  color="#fff" 
+                <Ionicons
+                  name={playerState === "playing" ? "pause" : "play"}
+                  size={28}
+                  color="#fff"
                 />
-              </div>
+              </button>
 
               {/* Skip -10s */}
-              <div
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
                   skip(-10);
                 }}
                 style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 16,
-                  backgroundColor: "rgba(255,255,255,0.1)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 4,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: "pointer",
                 }}
               >
-                <Ionicons name="play-back" size={16} color="#fff" />
-              </div>
+                <Ionicons name="play-back" size={22} color="#fff" />
+              </button>
 
               {/* Skip +10s */}
-              <div
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
                   skip(10);
                 }}
                 style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 16,
-                  backgroundColor: "rgba(255,255,255,0.1)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 4,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: "pointer",
                 }}
               >
-                <Ionicons name="play-forward" size={16} color="#fff" />
-              </div>
+                <Ionicons name="play-forward" size={22} color="#fff" />
+              </button>
 
+              {/* Tempo */}
+              <span style={{ color: "#fff", fontSize: 13, fontFamily: "monospace" }}>
+                {formatTime(localTime)} / {formatTime(duration)}
+              </span>
+            </div>
+
+            {/* Direita: Volume, Fullscreen */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               {/* Volume */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button
                   onClick={(e) => {
                     e.stopPropagation();
                     toggleMute();
                   }}
                   style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 16,
-                    backgroundColor: "rgba(255,255,255,0.1)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 4,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    cursor: "pointer",
                   }}
                 >
-                  <Ionicons 
-                    name={isMuted || volume === 0 ? "volume-mute" : volume < 0.5 ? "volume-low" : "volume-high"} 
-                    size={16} 
-                    color="#fff" 
+                  <Ionicons
+                    name={isMuted || volume === 0 ? "volume-mute" : volume < 0.5 ? "volume-low" : "volume-high"}
+                    size={22}
+                    color="#fff"
                   />
-                </div>
-                
-                {/* Volume slider */}
+                </button>
                 <input
                   type="range"
                   min="0"
@@ -609,7 +677,7 @@ export function VideoPlayerSync({
                   onChange={(e) => changeVolume(parseFloat(e.target.value))}
                   onClick={(e) => e.stopPropagation()}
                   style={{
-                    width: 60,
+                    width: 70,
                     height: 4,
                     cursor: "pointer",
                     accentColor: colors.primary,
@@ -617,71 +685,63 @@ export function VideoPlayerSync({
                 />
               </div>
 
-              {/* Tempo */}
-              <Text style={{ color: "#fff", fontSize: 13, fontFamily: "monospace" }}>
-                {formatTime(localTime)} / {formatTime(duration)}
-              </Text>
-            </div>
-
-            {/* Lado direito */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {/* Status de sincronização */}
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <div
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 4,
-                    backgroundColor: "#22c55e",
-                  }}
-                />
-                <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: 11 }}>
-                  Sincronizado
-                </Text>
-              </div>
-
               {/* Fullscreen */}
-              <div
+              <button
                 onClick={(e) => {
                   e.stopPropagation();
                   toggleFullscreen();
                 }}
                 style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 16,
-                  backgroundColor: "rgba(255,255,255,0.1)",
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: 4,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  cursor: "pointer",
                 }}
               >
-                <Ionicons 
-                  name={isFullscreen ? "contract" : "expand"} 
-                  size={16} 
-                  color="#fff" 
+                <Ionicons
+                  name={isFullscreen ? "contract" : "expand"}
+                  size={22}
+                  color="#fff"
                 />
-              </div>
+              </button>
             </div>
           </div>
         </div>
+
+        {/* Título */}
+        {showControls && title && (
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              background: "linear-gradient(rgba(0,0,0,0.7), transparent)",
+              padding: "12px 16px 30px",
+              zIndex: 10,
+            }}
+          >
+            <span style={{ color: "#fff", fontSize: 14, fontWeight: 500 }}>
+              {title}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
 
-  // Player Mobile (placeholder)
+  // Mobile fallback
   return (
     <View
       className="w-full bg-black rounded-xl items-center justify-center"
       style={{ aspectRatio: 16/9 }}
     >
-      <Ionicons name="phone-portrait" size={64} color={colors.primary} />
-      <Text className="text-white text-center mt-4 font-bold text-lg">
-        Player Mobile
-      </Text>
-      <Text className="text-gray-400 text-sm mt-2 text-center px-6 leading-5">
-        Para melhor experiência de sincronização, use o app no navegador web.
+      <ActivityIndicator size="large" color={colors.primary} />
+      <Text className="text-white text-center mt-4">
+        Carregando player...
       </Text>
     </View>
   );

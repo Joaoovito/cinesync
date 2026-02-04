@@ -133,3 +133,5 @@
 - [x] Implementar sincronização de tempo entre usuários
 - [ ] Testar com vídeos MP4 reais
 - [x] Garantir funcionamento em web e mobile
+
+- [x] Bug: Player mostra "Formato não suportado" ao carregar vídeo
