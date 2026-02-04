@@ -123,3 +123,13 @@
 - [x] Testar sincronização entre múltiplos usuários
 
 - [x] Bug: Player dá erro ao carregar vídeo e fica em loop infinito ao tentar novamente
+
+## Player Próprio v2 - Desenvolvimento Completo
+- [x] Criar player HTML5 robusto com controles nativos
+- [x] Implementar play/pause com feedback visual
+- [x] Implementar barra de progresso clicável
+- [x] Implementar controle de volume
+- [x] Implementar fullscreen
+- [x] Implementar sincronização de tempo entre usuários
+- [ ] Testar com vídeos MP4 reais
+- [x] Garantir funcionamento em web e mobile
