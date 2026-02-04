@@ -1,14 +1,20 @@
 import { ScrollView, Text, View, TouchableOpacity, TextInput, Alert } from "react-native";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ScreenContainer } from "@/components/screen-container";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 
-type Platform = "direct" | "google-drive";
+type Platform = "youtube" | "direct" | "google-drive";
 
 const PLATFORMS: { label: string; value: Platform; icon: string; description: string }[] = [
+  { 
+    label: "YouTube", 
+    value: "youtube", 
+    icon: "logo-youtube",
+    description: "Vídeos do YouTube (links youtube.com ou youtu.be)"
+  },
   { 
     label: "URL Direta", 
     value: "direct", 
@@ -23,11 +29,50 @@ const PLATFORMS: { label: string; value: Platform; icon: string; description: st
   },
 ];
 
+// Detectar automaticamente a plataforma baseada na URL
+function detectPlatform(url: string): Platform | null {
+  if (!url) return null;
+  
+  // YouTube
+  if (url.includes("youtube.com") || url.includes("youtu.be")) {
+    return "youtube";
+  }
+  
+  // Google Drive
+  if (url.includes("drive.google.com")) {
+    return "google-drive";
+  }
+  
+  // URL direta (se tem extensão de vídeo ou é uma URL válida)
+  if (url.match(/\.(mp4|webm|mov|m3u8|mkv|avi)(\?|$)/i) || url.startsWith("http")) {
+    return "direct";
+  }
+  
+  return null;
+}
+
+// Extrair ID do YouTube de várias formas de URL
+function extractYouTubeId(url: string): string | null {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=)([^&\s]+)/,
+    /(?:youtu\.be\/)([^?\s]+)/,
+    /(?:youtube\.com\/embed\/)([^?\s]+)/,
+    /(?:youtube\.com\/v\/)([^?\s]+)/,
+  ];
+  
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  
+  return null;
+}
+
 export default function CreateRoomScreen() {
   const router = useRouter();
   const colors = useColors();
   const [roomName, setRoomName] = useState("");
-  const [selectedPlatform, setSelectedPlatform] = useState<Platform>("direct");
+  const [selectedPlatform, setSelectedPlatform] = useState<Platform>("youtube");
   const [videoUrl, setVideoUrl] = useState("");
   const [videoTitle, setVideoTitle] = useState("");
 
@@ -42,6 +87,14 @@ export default function CreateRoomScreen() {
       Alert.alert("Erro", error.message || "Falha ao criar a sala");
     },
   });
+
+  // Auto-detectar plataforma quando URL muda
+  useEffect(() => {
+    const detected = detectPlatform(videoUrl);
+    if (detected && detected !== selectedPlatform) {
+      setSelectedPlatform(detected);
+    }
+  }, [videoUrl]);
 
   // Extrair ID do Google Drive da URL
   const extractGoogleDriveId = (url: string): string => {
@@ -82,7 +135,14 @@ export default function CreateRoomScreen() {
     // Processar URL baseado na plataforma
     let processedVideoId = videoUrl.trim();
     
-    if (selectedPlatform === "google-drive") {
+    if (selectedPlatform === "youtube") {
+      const youtubeId = extractYouTubeId(videoUrl);
+      if (!youtubeId) {
+        Alert.alert("Erro", "URL do YouTube inválida. Use um link como youtube.com/watch?v=... ou youtu.be/...");
+        return;
+      }
+      processedVideoId = youtubeId;
+    } else if (selectedPlatform === "google-drive") {
       processedVideoId = extractGoogleDriveId(videoUrl);
     }
 
@@ -97,6 +157,28 @@ export default function CreateRoomScreen() {
 
   const handleCancel = () => {
     router.back();
+  };
+
+  const getPlaceholder = () => {
+    switch (selectedPlatform) {
+      case "youtube":
+        return "https://www.youtube.com/watch?v=...";
+      case "google-drive":
+        return "https://drive.google.com/file/d/...";
+      default:
+        return "https://exemplo.com/video.mp4";
+    }
+  };
+
+  const getHelpText = () => {
+    switch (selectedPlatform) {
+      case "youtube":
+        return "Cole o link do vídeo do YouTube (youtube.com/watch?v=... ou youtu.be/...)";
+      case "google-drive":
+        return "Cole o link de compartilhamento do Google Drive";
+      default:
+        return "Cole a URL direta do vídeo (MP4, WebM, M3U8)";
+    }
   };
 
   return (
@@ -165,7 +247,7 @@ export default function CreateRoomScreen() {
                     className="w-10 h-10 rounded-full items-center justify-center mr-3"
                     style={{ 
                       backgroundColor: selectedPlatform === platform.value 
-                        ? colors.primary 
+                        ? platform.value === "youtube" ? "#FF0000" : colors.primary 
                         : colors.surface 
                     }}
                   >
@@ -200,16 +282,14 @@ export default function CreateRoomScreen() {
           {/* URL do Vídeo */}
           <View>
             <Text className="text-sm font-semibold text-foreground mb-2">
-              {selectedPlatform === "google-drive"
+              {selectedPlatform === "youtube"
+                ? "Link do YouTube"
+                : selectedPlatform === "google-drive"
                 ? "Link do Google Drive"
                 : "URL do Vídeo"}
             </Text>
             <TextInput
-              placeholder={
-                selectedPlatform === "google-drive"
-                  ? "https://drive.google.com/file/d/..."
-                  : "https://exemplo.com/video.mp4"
-              }
+              placeholder={getPlaceholder()}
               placeholderTextColor={colors.muted}
               value={videoUrl}
               onChangeText={setVideoUrl}
@@ -223,9 +303,7 @@ export default function CreateRoomScreen() {
               autoCorrect={false}
             />
             <Text className="text-xs text-muted mt-2">
-              {selectedPlatform === "google-drive"
-                ? "Cole o link de compartilhamento do Google Drive"
-                : "Cole a URL direta do vídeo (MP4, WebM, M3U8)"}
+              {getHelpText()}
             </Text>
           </View>
 
@@ -254,6 +332,7 @@ export default function CreateRoomScreen() {
                   Dica: Formatos Suportados
                 </Text>
                 <Text className="text-xs text-muted mt-1">
+                  • YouTube - Vídeos públicos e não listados{"\n"}
                   • MP4, WebM, MOV - Vídeos comuns{"\n"}
                   • M3U8, HLS - Streaming adaptativo{"\n"}
                   • Google Drive - Vídeos compartilhados

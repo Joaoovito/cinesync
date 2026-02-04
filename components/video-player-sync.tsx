@@ -74,9 +74,27 @@ export function VideoPlayerSync({
 
   useKeepAwake();
 
-  // Detectar se é YouTube
-  const youtubeId = platform === "youtube" ? extractYouTubeId(videoId) : null;
+  // Detectar se é YouTube - verificar plataforma OU detectar automaticamente da URL
+  const youtubeId = (() => {
+    // Se a plataforma é youtube, extrair o ID
+    if (platform === "youtube") {
+      return extractYouTubeId(videoId);
+    }
+    // Também detectar automaticamente se a URL parece ser do YouTube
+    if (videoId.includes("youtube.com") || videoId.includes("youtu.be")) {
+      return extractYouTubeId(videoId);
+    }
+    return null;
+  })();
   const isYouTube = !!youtubeId;
+  
+  // Debug
+  useEffect(() => {
+    console.log("[VideoPlayer] videoId:", videoId);
+    console.log("[VideoPlayer] platform:", platform);
+    console.log("[VideoPlayer] youtubeId:", youtubeId);
+    console.log("[VideoPlayer] isYouTube:", isYouTube);
+  }, [videoId, platform, youtubeId, isYouTube]);
 
   // Formatar tempo (HH:MM:SS ou MM:SS)
   const formatTime = useCallback((seconds: number): string => {

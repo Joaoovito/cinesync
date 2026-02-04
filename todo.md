@@ -144,3 +144,8 @@
 - [x] Implementar comunicação via postMessage para controlar o player
 - [x] Integrar sincronização de tempo entre usuários
 - [x] Testar player com vídeos do YouTube
+
+## Correção YouTube IFrame Player
+- [x] Adicionar opção YouTube na tela de criação de sala
+- [x] Corrigir detecção automática de URLs do YouTube no player
+- [x] Testar player com URL do YouTube
