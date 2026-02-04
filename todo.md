@@ -135,3 +135,12 @@
 - [x] Garantir funcionamento em web e mobile
 
 - [x] Bug: Player mostra "Formato não suportado" ao carregar vídeo
+
+- [x] Bug: YouTube e Google Drive mostram erro de CORS - implementar iframe
+
+## Arquitetura Controller Proxy - YouTube IFrame
+- [x] Criar player YouTube com IFrame API e controles nativos ocultos
+- [x] Implementar overlay UI com controles customizados (play/pause, seek, volume)
+- [x] Implementar comunicação via postMessage para controlar o player
+- [x] Integrar sincronização de tempo entre usuários
+- [x] Testar player com vídeos do YouTube
