@@ -156,4 +156,12 @@
 - [x] Implementar listeners de comandos (play_command, pause_command, seek_command)
 - [x] Implementar time_sync do Host a cada 2 segundos
 - [x] Implementar correção automática de tempo nos participantes (tolerância 2s)
-- [ ] Testar sincronização entre múltiplos usuários
+- [x] Testar sincronização entre múltiplos usuários
+
+## Sincronização Estilo Rave (Socket.IO)
+- [x] Instalar dependências (react-native-youtube-iframe, socket.io-client, socket.io)
+- [x] Criar servidor Socket.IO (socket-server.ts) na porta 4000
+- [x] Reescrever VideoPlayerSync com overlay de controles
+- [x] Implementar lógica de marionete (emit -> on -> execute)
+- [x] Integrar Socket.IO na tela de sala
+- [x] Testar sincronização em tempo real

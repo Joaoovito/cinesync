@@ -1,3 +1,14 @@
+/**
+ * Tela de Sala - Sincronização via Socket.IO
+ * 
+ * Arquitetura:
+ * 1. Conecta ao servidor Socket.IO ao entrar na sala
+ * 2. Botões de controle emitem eventos ao servidor
+ * 3. Servidor retransmite para todos na sala
+ * 4. Player executa ações apenas ao receber eventos
+ * 5. Host envia time_sync a cada 2 segundos
+ */
+
 import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ScreenContainer } from "@/components/screen-container";
@@ -6,9 +17,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/hooks/use-auth";
-import { VideoPlayerSync } from "@/components/video-player-sync";
+import { VideoPlayerSync, VideoPlayerSyncRef } from "@/components/video-player-sync";
 import { ChatRoom } from "@/components/chat-room";
 import { NotificationToast, type NotificationType } from "@/components/notification-toast";
+import { useSocket } from "@/hooks/use-socket";
 
 interface ChatMessage {
   id: number;
@@ -25,6 +37,7 @@ export default function RoomScreen() {
   const { id } = useLocalSearchParams();
   const { user } = useAuth();
   const roomId = Number(id);
+  const roomIdStr = String(roomId);
 
   // Queries
   const { data: room, isLoading: roomLoading } = trpc.rooms.get.useQuery({ id: roomId });
@@ -33,12 +46,6 @@ export default function RoomScreen() {
     limit: 50,
   }, { refetchInterval: 2000 });
   const { data: participantCount } = trpc.participants.count.useQuery({ roomId }, { refetchInterval: 3000 });
-  
-  // Query de sincronização - polling rápido para receber comandos
-  const { data: syncState, refetch: refetchSyncState } = trpc.rooms.getSyncState.useQuery(
-    { roomId },
-    { refetchInterval: 500 } // Polling a cada 500ms para sincronização rápida
-  );
 
   // State
   const [isPlaying, setIsPlaying] = useState(false);
@@ -47,41 +54,13 @@ export default function RoomScreen() {
   const [notification, setNotification] = useState<{ message: string; type: NotificationType } | null>(null);
   const [isHost, setIsHost] = useState(false);
   
-  // Refs para evitar loops e controlar sincronização
+  // Refs
+  const playerRef = useRef<VideoPlayerSyncRef>(null);
   const previousParticipantCount = useRef<number | undefined>(undefined);
-  const isInitialized = useRef(false);
-  const lastServerState = useRef<{ isPlaying: boolean | null; currentTime: number }>({
-    isPlaying: null,
-    currentTime: 0,
-  });
-  const localTimeRef = useRef(0); // Tempo local do player
   const timeSyncInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pendingCommand = useRef<"play" | "pause" | "seek" | null>(null);
+  const localTimeRef = useRef(0);
 
-  // Mutations para enviar comandos ao servidor
-  const playRequestMutation = trpc.rooms.playRequest.useMutation({
-    onSuccess: () => {
-      console.log("[Sync] Play request enviado ao servidor");
-      refetchSyncState();
-    },
-  });
-
-  const pauseRequestMutation = trpc.rooms.pauseRequest.useMutation({
-    onSuccess: () => {
-      console.log("[Sync] Pause request enviado ao servidor");
-      refetchSyncState();
-    },
-  });
-
-  const seekRequestMutation = trpc.rooms.seekRequest.useMutation({
-    onSuccess: () => {
-      console.log("[Sync] Seek request enviado ao servidor");
-      refetchSyncState();
-    },
-  });
-
-  const timeSyncMutation = trpc.rooms.timeSync.useMutation();
-
+  // Mutations
   const sendMessageMutation = trpc.chat.send.useMutation({
     onSuccess: () => {
       refetchMessages();
@@ -97,55 +76,110 @@ export default function RoomScreen() {
     }
   }, [room, user]);
 
-  // Inicializar estado do vídeo quando carregar da sala
-  useEffect(() => {
-    if (syncState && !isInitialized.current) {
-      console.log("[Room] Inicializando com estado salvo:", syncState);
-      setIsPlaying(syncState.isPlaying ?? false);
-      setCurrentTime(syncState.currentTime ?? 0);
-      localTimeRef.current = syncState.currentTime ?? 0;
-      isInitialized.current = true;
-      lastServerState.current = {
-        isPlaying: syncState.isPlaying ?? null,
-        currentTime: syncState.currentTime ?? 0,
-      };
-    }
-  }, [syncState]);
+  // ==================== SOCKET.IO ====================
 
-  // ==================== SINCRONIZAÇÃO VIA POLLING ====================
-  
-  // Receber comandos do servidor (play/pause/seek)
-  useEffect(() => {
-    if (!syncState || !isInitialized.current) return;
-
-    // Detectar mudança de play/pause
-    if (syncState.isPlaying !== null && syncState.isPlaying !== undefined && syncState.isPlaying !== lastServerState.current.isPlaying) {
-      console.log("[Sync] Comando recebido:", syncState.isPlaying ? "PLAY" : "PAUSE");
-      setIsPlaying(syncState.isPlaying);
-      lastServerState.current.isPlaying = syncState.isPlaying;
+  // Callback para receber ações de sincronização
+  const handleSyncAction = useCallback((action: {
+    action: "play" | "pause" | "seek";
+    currentTime?: number;
+    seekTime?: number;
+  }) => {
+    console.log("[Room] Recebido sync_action:", action);
+    
+    switch (action.action) {
+      case "play":
+        setIsPlaying(true);
+        if (action.currentTime !== undefined) {
+          setCurrentTime(action.currentTime);
+          localTimeRef.current = action.currentTime;
+        }
+        break;
+      case "pause":
+        setIsPlaying(false);
+        if (action.currentTime !== undefined) {
+          setCurrentTime(action.currentTime);
+          localTimeRef.current = action.currentTime;
+        }
+        break;
+      case "seek":
+        if (action.seekTime !== undefined) {
+          setCurrentTime(action.seekTime);
+          localTimeRef.current = action.seekTime;
+          playerRef.current?.seekTo(action.seekTime);
+        }
+        break;
     }
+  }, []);
 
-    // Detectar mudança de tempo (seek) - tolerância de 2 segundos
-    if (syncState.currentTime !== null && syncState.currentTime !== undefined) {
-      const serverTime = syncState.currentTime;
-      const localTime = localTimeRef.current;
-      const diff = Math.abs(serverTime - localTime);
-      
-      // Se a diferença for maior que 2 segundos, fazer seek
-      if (diff > 2) {
-        console.log("[Sync] Correção de tempo:", serverTime, "diff:", diff.toFixed(1), "s");
-        setCurrentTime(serverTime);
-        localTimeRef.current = serverTime;
-        lastServerState.current.currentTime = serverTime;
-      }
+  // Callback para receber time_sync do host
+  const handleTimeSync = useCallback((sync: {
+    currentTime: number;
+    isPlaying: boolean;
+  }) => {
+    // Não aplicar se for o host (ele é quem envia)
+    if (isHost) return;
+    
+    const localTime = localTimeRef.current;
+    const diff = Math.abs(sync.currentTime - localTime);
+    
+    // Se diferença > 2 segundos, corrigir
+    if (diff > 2) {
+      console.log("[Room] Correção de tempo do host:", sync.currentTime, "diff:", diff.toFixed(1));
+      setCurrentTime(sync.currentTime);
+      localTimeRef.current = sync.currentTime;
+      playerRef.current?.seekTo(sync.currentTime);
     }
-  }, [syncState?.isPlaying, syncState?.currentTime]);
+    
+    // Sincronizar play/pause
+    if (sync.isPlaying !== isPlaying) {
+      setIsPlaying(sync.isPlaying);
+    }
+  }, [isHost, isPlaying]);
+
+  // Callback para estado inicial da sala
+  const handleRoomState = useCallback((state: {
+    currentTime: number;
+    isPlaying: boolean;
+  }) => {
+    console.log("[Room] Estado inicial da sala:", state);
+    setCurrentTime(state.currentTime);
+    setIsPlaying(state.isPlaying);
+    localTimeRef.current = state.currentTime;
+  }, []);
+
+  // Callback para usuário entrou
+  const handleUserJoined = useCallback((data: { userId: string }) => {
+    setNotification({
+      message: "Um novo usuário entrou na sala",
+      type: "user-joined",
+    });
+  }, []);
+
+  // Callback para usuário saiu
+  const handleUserLeft = useCallback((data: { userId: string }) => {
+    setNotification({
+      message: "Um usuário saiu da sala",
+      type: "user-left",
+    });
+  }, []);
+
+  // Hook do Socket.IO
+  const { isConnected, connectionError, emitSyncAction, emitTimeSync } = useSocket({
+    roomId: roomIdStr,
+    userId: String(user?.id || "anonymous"),
+    isHost,
+    onSyncAction: handleSyncAction,
+    onTimeSync: handleTimeSync,
+    onRoomState: handleRoomState,
+    onUserJoined: handleUserJoined,
+    onUserLeft: handleUserLeft,
+  });
 
   // ==================== TIME SYNC DO HOST ====================
-  
+
   // Host envia time_sync a cada 2 segundos
   useEffect(() => {
-    if (!isHost || !isInitialized.current) return;
+    if (!isHost || !isConnected) return;
 
     // Limpar interval anterior
     if (timeSyncInterval.current) {
@@ -154,16 +188,9 @@ export default function RoomScreen() {
 
     // Enviar time_sync a cada 2 segundos
     timeSyncInterval.current = setInterval(() => {
-      if (isPlaying) {
-        const currentVideoTime = localTimeRef.current;
-        console.log("[Host] Enviando time_sync:", currentVideoTime.toFixed(1));
-        
-        timeSyncMutation.mutate({
-          roomId,
-          currentTime: currentVideoTime,
-          timestamp: Date.now(),
-        });
-      }
+      const currentVideoTime = localTimeRef.current;
+      console.log("[Host] Enviando time_sync:", currentVideoTime.toFixed(1));
+      emitTimeSync(currentVideoTime, isPlaying);
     }, 2000);
 
     return () => {
@@ -171,7 +198,32 @@ export default function RoomScreen() {
         clearInterval(timeSyncInterval.current);
       }
     };
-  }, [isHost, isPlaying, roomId, timeSyncMutation]);
+  }, [isHost, isConnected, isPlaying, emitTimeSync]);
+
+  // ==================== HANDLERS ====================
+
+  // Handler para play request - EMITE EVENTO
+  const handlePlayRequest = useCallback(() => {
+    console.log("[Room] Emitindo play_request");
+    emitSyncAction("play", localTimeRef.current);
+  }, [emitSyncAction]);
+
+  // Handler para pause request - EMITE EVENTO
+  const handlePauseRequest = useCallback(() => {
+    console.log("[Room] Emitindo pause_request");
+    emitSyncAction("pause", localTimeRef.current);
+  }, [emitSyncAction]);
+
+  // Handler para seek request - EMITE EVENTO
+  const handleSeekRequest = useCallback((seekTime: number) => {
+    console.log("[Room] Emitindo seek_request:", seekTime);
+    emitSyncAction("seek", undefined, seekTime);
+  }, [emitSyncAction]);
+
+  // Handler para atualização de tempo local
+  const handleTimeUpdate = useCallback((time: number) => {
+    localTimeRef.current = time;
+  }, []);
 
   // Formatar mensagens do chat
   useEffect(() => {
@@ -184,69 +236,6 @@ export default function RoomScreen() {
       setChatMessages(formatted);
     }
   }, [messages, user?.id]);
-
-  // Notificações de entrada/saída
-  useEffect(() => {
-    if (participantCount !== undefined) {
-      if (previousParticipantCount.current !== undefined) {
-        if (participantCount > previousParticipantCount.current) {
-          setNotification({
-            message: `Um novo usuário entrou na sala`,
-            type: "user-joined",
-          });
-        } else if (participantCount < previousParticipantCount.current) {
-          setNotification({
-            message: `Um usuário saiu da sala`,
-            type: "user-left",
-          });
-        }
-      }
-      previousParticipantCount.current = participantCount;
-    }
-  }, [participantCount]);
-
-  // ==================== HANDLERS DE CONTROLE ====================
-
-  // Handler para play/pause - ENVIA REQUEST AO SERVIDOR, NÃO EXECUTA LOCALMENTE
-  const handlePlayRequest = useCallback(() => {
-    if (isPlaying) {
-      // Solicitar PAUSE ao servidor
-      console.log("[Control] Enviando pause_request");
-      pauseRequestMutation.mutate({
-        roomId,
-        currentTime: Math.floor(localTimeRef.current),
-      });
-    } else {
-      // Solicitar PLAY ao servidor
-      console.log("[Control] Enviando play_request");
-      playRequestMutation.mutate({
-        roomId,
-        currentTime: Math.floor(localTimeRef.current),
-      });
-    }
-  }, [isPlaying, roomId, playRequestMutation, pauseRequestMutation]);
-
-  // Handler para seek - ENVIA REQUEST AO SERVIDOR
-  const handleSeekRequest = useCallback((seekTime: number) => {
-    console.log("[Control] Enviando seek_request:", seekTime);
-    seekRequestMutation.mutate({
-      roomId,
-      seekTime: Math.floor(seekTime),
-    });
-  }, [roomId, seekRequestMutation]);
-
-  // Handler para atualização de tempo local (do player)
-  const handleTimeUpdate = useCallback((time: number) => {
-    localTimeRef.current = time;
-    setCurrentTime(time);
-  }, []);
-
-  // Handler quando o player muda play/pause localmente (para sincronizar estado visual)
-  const handleLocalPlayPause = useCallback((playing: boolean) => {
-    // Este callback é chamado pelo player quando o estado muda
-    // Não enviamos request aqui, apenas atualizamos o estado visual
-    // O request é enviado pelo handlePlayRequest
-  }, []);
 
   // Handler para enviar mensagem
   const handleSendMessage = useCallback((message: string) => {
@@ -261,13 +250,10 @@ export default function RoomScreen() {
   const handleLeaveRoom = useCallback(() => {
     // Se for o host, pausar antes de sair
     if (isHost) {
-      pauseRequestMutation.mutate({
-        roomId,
-        currentTime: Math.floor(localTimeRef.current),
-      });
+      emitSyncAction("pause", localTimeRef.current);
     }
     router.back();
-  }, [roomId, isHost, pauseRequestMutation, router]);
+  }, [isHost, emitSyncAction, router]);
 
   if (roomLoading) {
     return (
@@ -321,11 +307,23 @@ export default function RoomScreen() {
               </View>
             )}
           </View>
-          <View className="flex-row items-center mt-1">
-            <View className="w-2 h-2 rounded-full bg-success mr-2" />
-            <Text className="text-xs text-muted">
-              {participantCount || 0} {participantCount === 1 ? "pessoa" : "pessoas"} online
-            </Text>
+          <View className="flex-row items-center mt-1 gap-3">
+            <View className="flex-row items-center">
+              <View className="w-2 h-2 rounded-full bg-success mr-2" />
+              <Text className="text-xs text-muted">
+                {participantCount || 0} {participantCount === 1 ? "pessoa" : "pessoas"}
+              </Text>
+            </View>
+            <View className="flex-row items-center">
+              <Ionicons 
+                name={isConnected ? "wifi" : "wifi-outline"} 
+                size={12} 
+                color={isConnected ? colors.success : colors.error} 
+              />
+              <Text className="text-xs text-muted ml-1">
+                {isConnected ? "Conectado" : connectionError || "Desconectado"}
+              </Text>
+            </View>
           </View>
         </View>
         <TouchableOpacity
@@ -340,15 +338,16 @@ export default function RoomScreen() {
       {/* Player de Vídeo */}
       <View className="px-4 py-3">
         <VideoPlayerSync
+          ref={playerRef}
           videoId={room.videoId}
           platform={room.platform}
           title={room.videoTitle}
           isPlaying={isPlaying}
           currentTime={currentTime}
-          onPlayPause={handleLocalPlayPause}
-          onTimeUpdate={handleTimeUpdate}
           onPlayRequest={handlePlayRequest}
+          onPauseRequest={handlePauseRequest}
           onSeekRequest={handleSeekRequest}
+          onTimeUpdate={handleTimeUpdate}
         />
       </View>
 
@@ -358,7 +357,7 @@ export default function RoomScreen() {
         style={{ borderColor: colors.border }}
       >
         <TouchableOpacity
-          onPress={handlePlayRequest}
+          onPress={isPlaying ? handlePauseRequest : handlePlayRequest}
           className="flex-row items-center gap-2"
           activeOpacity={0.7}
         >
@@ -374,7 +373,11 @@ export default function RoomScreen() {
 
         <View className="flex-row items-center gap-4">
           <View className="flex-row items-center gap-1">
-            <Ionicons name="sync" size={14} color={colors.success} />
+            <Ionicons 
+              name={isConnected ? "sync" : "sync-outline"} 
+              size={14} 
+              color={isConnected ? colors.success : colors.muted} 
+            />
             <Text className="text-xs text-muted">
               {isHost ? "Host" : "Sincronizado"}
             </Text>

@@ -1,8 +1,28 @@
-import { View, Text, ActivityIndicator, Platform, Pressable } from "react-native";
-import { useRef, useEffect, useState, useCallback } from "react";
+/**
+ * VideoPlayerSync - Player de vídeo com sincronização via Socket.IO
+ * 
+ * Arquitetura de Overlay:
+ * 1. YoutubePlayer invisível (controles nativos desabilitados)
+ * 2. Controles personalizados sobrepostos
+ * 3. Lógica de "marionete" - botões emitem eventos, ações executam ao receber
+ */
+
+import { View, Text, ActivityIndicator, Platform, Pressable, Dimensions } from "react-native";
+import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 import { useColors } from "@/hooks/use-colors";
 import { Ionicons } from "@expo/vector-icons";
 import { useKeepAwake } from "expo-keep-awake";
+import Slider from "@react-native-community/slider";
+
+// Importar YoutubePlayer apenas em plataformas nativas
+let YoutubePlayer: any = null;
+if (Platform.OS !== "web") {
+  try {
+    YoutubePlayer = require("react-native-youtube-iframe").default;
+  } catch (e) {
+    console.log("[VideoPlayer] react-native-youtube-iframe não disponível");
+  }
+}
 
 interface VideoPlayerSyncProps {
   videoId: string;
@@ -10,12 +30,19 @@ interface VideoPlayerSyncProps {
   title: string;
   isPlaying?: boolean;
   currentTime?: number;
-  onPlayPause?: (isPlaying: boolean) => void;
+  // Callbacks de marionete - emitir eventos, não executar localmente
+  onPlayRequest?: () => void;
+  onPauseRequest?: () => void;
+  onSeekRequest?: (time: number) => void;
   onTimeUpdate?: (currentTime: number) => void;
-  onSeek?: (time: number) => void;
-  // Novos callbacks para sincronização via servidor
-  onPlayRequest?: () => void; // Emitir play_request ao servidor
-  onSeekRequest?: (time: number) => void; // Emitir seek_request ao servidor
+  onReady?: () => void;
+}
+
+export interface VideoPlayerSyncRef {
+  play: () => void;
+  pause: () => void;
+  seekTo: (time: number) => void;
+  getCurrentTime: () => number;
 }
 
 type PlayerState = "loading" | "ready" | "playing" | "paused" | "error" | "buffering";
@@ -42,42 +69,42 @@ function extractYouTubeId(url: string): string | null {
   return null;
 }
 
-export function VideoPlayerSync({
+export const VideoPlayerSync = forwardRef<VideoPlayerSyncRef, VideoPlayerSyncProps>(({
   videoId,
   platform,
   title,
   isPlaying = false,
   currentTime = 0,
-  onPlayPause,
-  onTimeUpdate,
   onPlayRequest,
+  onPauseRequest,
   onSeekRequest,
-}: VideoPlayerSyncProps) {
+  onTimeUpdate,
+  onReady,
+}, ref) => {
   const colors = useColors();
+  const { width: screenWidth } = Dimensions.get("window");
+  const playerHeight = (screenWidth * 9) / 16; // Aspect ratio 16:9
   
   // Estados do player
   const [playerState, setPlayerState] = useState<PlayerState>("loading");
   const [localTime, setLocalTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [youtubeReady, setYoutubeReady] = useState(false);
+  const [isSliding, setIsSliding] = useState(false);
+  const [sliderValue, setSliderValue] = useState(0);
   
   // Refs
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playerRef = useRef<any>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const isSeeking = useRef(false);
-  const initialSeekDone = useRef(false);
   const controlsTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timeUpdateInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastTimeUpdate = useRef(0);
+  const isSeeking = useRef(false);
 
   useKeepAwake();
 
-  // Detectar se é YouTube - verificar plataforma OU detectar automaticamente da URL
+  // Detectar se é YouTube
   const youtubeId = (() => {
     if (platform === "youtube") {
       return extractYouTubeId(videoId);
@@ -88,14 +115,6 @@ export function VideoPlayerSync({
     return null;
   })();
   const isYouTube = !!youtubeId;
-  
-  // Debug
-  useEffect(() => {
-    console.log("[VideoPlayer] videoId:", videoId);
-    console.log("[VideoPlayer] platform:", platform);
-    console.log("[VideoPlayer] youtubeId:", youtubeId);
-    console.log("[VideoPlayer] isYouTube:", isYouTube);
-  }, [videoId, platform, youtubeId, isYouTube]);
 
   // Formatar tempo (HH:MM:SS ou MM:SS)
   const formatTime = useCallback((seconds: number): string => {
@@ -125,168 +144,151 @@ export function VideoPlayerSync({
     }
   }, [playerState]);
 
-  // ==================== YOUTUBE PLAYER CONTROLS ====================
-  
-  // Enviar comando para o YouTube IFrame
-  const sendYouTubeCommand = useCallback((command: string, args?: any) => {
-    if (!iframeRef.current?.contentWindow) return;
-    
-    const message = JSON.stringify({
-      event: "command",
-      func: command,
-      args: args || [],
-    });
-    
-    iframeRef.current.contentWindow.postMessage(message, "*");
-  }, []);
+  // ==================== COMANDOS DO PLAYER (executados ao receber evento) ====================
 
-  // Play YouTube (execução local após receber comando do servidor)
-  const youtubePlay = useCallback(() => {
-    sendYouTubeCommand("playVideo");
+  // Play - executar localmente
+  const executePlay = useCallback(() => {
+    console.log("[Player] Executando PLAY");
+    if (Platform.OS === "web" && iframeRef.current?.contentWindow) {
+      const message = JSON.stringify({
+        event: "command",
+        func: "playVideo",
+        args: [],
+      });
+      iframeRef.current.contentWindow.postMessage(message, "*");
+    }
     setPlayerState("playing");
     resetControlsTimeout();
-  }, [sendYouTubeCommand, resetControlsTimeout]);
+  }, [resetControlsTimeout]);
 
-  // Pause YouTube (execução local após receber comando do servidor)
-  const youtubePause = useCallback(() => {
-    sendYouTubeCommand("pauseVideo");
+  // Pause - executar localmente
+  const executePause = useCallback(() => {
+    console.log("[Player] Executando PAUSE");
+    if (Platform.OS === "web" && iframeRef.current?.contentWindow) {
+      const message = JSON.stringify({
+        event: "command",
+        func: "pauseVideo",
+        args: [],
+      });
+      iframeRef.current.contentWindow.postMessage(message, "*");
+    }
     setPlayerState("paused");
     resetControlsTimeout();
-  }, [sendYouTubeCommand, resetControlsTimeout]);
+  }, [resetControlsTimeout]);
 
-  // Seek YouTube (execução local após receber comando do servidor)
-  const youtubeSeek = useCallback((time: number) => {
+  // Seek - executar localmente
+  const executeSeek = useCallback((time: number) => {
+    console.log("[Player] Executando SEEK para:", time);
     isSeeking.current = true;
-    sendYouTubeCommand("seekTo", [time, true]);
+    
+    if (Platform.OS === "web" && iframeRef.current?.contentWindow) {
+      const message = JSON.stringify({
+        event: "command",
+        func: "seekTo",
+        args: [time, true],
+      });
+      iframeRef.current.contentWindow.postMessage(message, "*");
+    }
+    
     setLocalTime(time);
     setTimeout(() => {
       isSeeking.current = false;
     }, 500);
     resetControlsTimeout();
-  }, [sendYouTubeCommand, resetControlsTimeout]);
+  }, [resetControlsTimeout]);
 
-  // Toggle play/pause - ENVIA REQUEST AO SERVIDOR
+  // Expor métodos via ref
+  useImperativeHandle(ref, () => ({
+    play: executePlay,
+    pause: executePause,
+    seekTo: executeSeek,
+    getCurrentTime: () => localTime,
+  }), [executePlay, executePause, executeSeek, localTime]);
+
+  // ==================== HANDLERS DE CONTROLE (emitem eventos) ====================
+
+  // Toggle play/pause - EMITE EVENTO, NÃO EXECUTA
   const handleTogglePlayPause = useCallback(() => {
-    if (onPlayRequest) {
-      // Nova lógica: emitir evento ao servidor, não executar localmente
-      console.log("[Player] Emitindo play_request ao servidor");
-      onPlayRequest();
-    } else {
-      // Fallback para comportamento antigo
-      if (isYouTube) {
-        if (playerState === "playing") {
-          youtubePause();
-          onPlayPause?.(false);
-        } else {
-          youtubePlay();
-          onPlayPause?.(true);
-        }
-      } else if (videoRef.current) {
-        if (videoRef.current.paused) {
-          videoRef.current.play().catch(console.error);
-        } else {
-          videoRef.current.pause();
-        }
-      }
-    }
     resetControlsTimeout();
-  }, [onPlayRequest, isYouTube, playerState, youtubePlay, youtubePause, onPlayPause, resetControlsTimeout]);
+    
+    if (playerState === "playing") {
+      console.log("[Player] Emitindo PAUSE request");
+      onPauseRequest?.();
+    } else {
+      console.log("[Player] Emitindo PLAY request");
+      onPlayRequest?.();
+    }
+  }, [playerState, onPlayRequest, onPauseRequest, resetControlsTimeout]);
 
-  // Seek - ENVIA REQUEST AO SERVIDOR
+  // Seek - EMITE EVENTO, NÃO EXECUTA
   const handleSeek = useCallback((time: number) => {
     const newTime = Math.max(0, Math.min(time, duration));
-    
-    if (onSeekRequest) {
-      // Nova lógica: emitir evento ao servidor
-      console.log("[Player] Emitindo seek_request ao servidor:", newTime);
-      onSeekRequest(newTime);
-    } else {
-      // Fallback para comportamento antigo
-      if (isYouTube) {
-        youtubeSeek(newTime);
-      } else if (videoRef.current) {
-        isSeeking.current = true;
-        videoRef.current.currentTime = newTime;
-        setLocalTime(newTime);
-        setTimeout(() => {
-          isSeeking.current = false;
-        }, 500);
-      }
-    }
+    console.log("[Player] Emitindo SEEK request para:", newTime);
+    onSeekRequest?.(newTime);
     resetControlsTimeout();
-  }, [onSeekRequest, isYouTube, youtubeSeek, duration, resetControlsTimeout]);
+  }, [duration, onSeekRequest, resetControlsTimeout]);
 
-  // Seek por porcentagem
-  const seekToPercentage = useCallback((percentage: number) => {
-    if (duration <= 0) return;
-    const newTime = (percentage / 100) * duration;
+  // Slider handlers
+  const handleSliderStart = useCallback(() => {
+    setIsSliding(true);
+  }, []);
+
+  const handleSliderChange = useCallback((value: number) => {
+    setSliderValue(value);
+  }, []);
+
+  const handleSliderComplete = useCallback((value: number) => {
+    setIsSliding(false);
+    const newTime = (value / 100) * duration;
     handleSeek(newTime);
   }, [duration, handleSeek]);
 
-  // Pular segundos
+  // Skip segundos
   const skip = useCallback((seconds: number) => {
     handleSeek(localTime + seconds);
   }, [localTime, handleSeek]);
 
-  // Mute/Unmute YouTube
-  const youtubeToggleMute = useCallback(() => {
-    if (isMuted) {
-      sendYouTubeCommand("unMute");
-      setIsMuted(false);
-    } else {
-      sendYouTubeCommand("mute");
-      setIsMuted(true);
-    }
-    resetControlsTimeout();
-  }, [isMuted, sendYouTubeCommand, resetControlsTimeout]);
-
   // Toggle mute
   const toggleMute = useCallback(() => {
-    if (isYouTube) {
-      youtubeToggleMute();
-      return;
+    if (Platform.OS === "web" && iframeRef.current?.contentWindow) {
+      const message = JSON.stringify({
+        event: "command",
+        func: isMuted ? "unMute" : "mute",
+        args: [],
+      });
+      iframeRef.current.contentWindow.postMessage(message, "*");
     }
-    
-    if (!videoRef.current) return;
-    videoRef.current.muted = !isMuted;
     setIsMuted(!isMuted);
     resetControlsTimeout();
-  }, [isYouTube, youtubeToggleMute, isMuted, resetControlsTimeout]);
+  }, [isMuted, resetControlsTimeout]);
 
-  // Toggle fullscreen
-  const toggleFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
+  // ==================== SINCRONIZAÇÃO COM PROPS ====================
+
+  // Executar play/pause quando isPlaying mudar (comando do servidor)
+  useEffect(() => {
+    if (isPlaying && playerState !== "playing") {
+      executePlay();
+    } else if (!isPlaying && playerState === "playing") {
+      executePause();
+    }
+  }, [isPlaying, playerState, executePlay, executePause]);
+
+  // Executar seek quando currentTime mudar significativamente (comando do servidor)
+  useEffect(() => {
+    if (isSeeking.current) return;
     
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen?.().catch(console.error);
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen?.().catch(console.error);
-      setIsFullscreen(false);
+    const diff = Math.abs(currentTime - localTime);
+    if (diff > 2 && currentTime > 0) {
+      console.log("[Player] Correção de tempo do servidor:", currentTime, "diff:", diff);
+      executeSeek(currentTime);
     }
-    resetControlsTimeout();
-  }, [resetControlsTimeout]);
+  }, [currentTime, localTime, executeSeek]);
 
-  // Retry loading
-  const retryLoading = useCallback(() => {
-    if (isYouTube) {
-      if (iframeRef.current) {
-        const src = iframeRef.current.src;
-        iframeRef.current.src = "";
-        setTimeout(() => {
-          if (iframeRef.current) iframeRef.current.src = src;
-        }, 100);
-      }
-    } else if (videoRef.current) {
-      setPlayerState("loading");
-      setErrorMessage(null);
-      videoRef.current.load();
-    }
-  }, [isYouTube]);
+  // ==================== WEB: YOUTUBE IFRAME ====================
 
   // Listener para mensagens do YouTube IFrame
   useEffect(() => {
-    if (!isYouTube || Platform.OS !== "web") return;
+    if (!isYouTube || Platform.OS !== "web" || typeof window === "undefined") return;
 
     const handleMessage = (event: MessageEvent) => {
       try {
@@ -294,15 +296,12 @@ export function VideoPlayerSync({
         
         if (data.event === "onReady") {
           console.log("[YouTube] Player ready");
-          setYoutubeReady(true);
           setPlayerState("ready");
+          onReady?.();
           
           // Seek para o tempo inicial se necessário
-          if (currentTime > 0 && !initialSeekDone.current) {
-            initialSeekDone.current = true;
-            setTimeout(() => {
-              youtubeSeek(currentTime);
-            }, 500);
+          if (currentTime > 0) {
+            setTimeout(() => executeSeek(currentTime), 500);
           }
         }
         
@@ -328,10 +327,10 @@ export function VideoPlayerSync({
         }
         
         if (data.event === "infoDelivery") {
-          if (data.info?.currentTime !== undefined && !isSeeking.current) {
+          if (data.info?.currentTime !== undefined && !isSeeking.current && !isSliding) {
             setLocalTime(data.info.currentTime);
             
-            // Enviar atualização de tempo ao parent
+            // Enviar atualização de tempo
             if (Date.now() - lastTimeUpdate.current > 250) {
               onTimeUpdate?.(data.info.currentTime);
               lastTimeUpdate.current = Date.now();
@@ -339,9 +338,6 @@ export function VideoPlayerSync({
           }
           if (data.info?.duration !== undefined) {
             setDuration(data.info.duration);
-          }
-          if (data.info?.volume !== undefined) {
-            setVolume(data.info.volume / 100);
           }
           if (data.info?.muted !== undefined) {
             setIsMuted(data.info.muted);
@@ -352,120 +348,11 @@ export function VideoPlayerSync({
       }
     };
 
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [isYouTube, currentTime, youtubeSeek, onTimeUpdate]);
-
-  // Sincronizar play/pause do YouTube quando isPlaying mudar (comando do servidor)
-  useEffect(() => {
-    if (!isYouTube || !youtubeReady) return;
-
-    if (isPlaying && playerState !== "playing") {
-      console.log("[YouTube] Executando PLAY (comando do servidor)");
-      youtubePlay();
-    } else if (!isPlaying && playerState === "playing") {
-      console.log("[YouTube] Executando PAUSE (comando do servidor)");
-      youtubePause();
+    if (typeof window !== "undefined") {
+      window.addEventListener("message", handleMessage);
+      return () => window.removeEventListener("message", handleMessage);
     }
-  }, [isYouTube, youtubeReady, isPlaying, playerState, youtubePlay, youtubePause]);
-
-  // Sincronizar tempo do YouTube quando currentTime mudar significativamente (comando do servidor)
-  useEffect(() => {
-    if (!isYouTube || !youtubeReady || isSeeking.current) return;
-
-    const diff = Math.abs(currentTime - localTime);
-    if (diff > 2 && currentTime > 0) {
-      console.log("[YouTube] Executando SEEK (comando do servidor):", currentTime, "diff:", diff);
-      youtubeSeek(currentTime);
-    }
-  }, [isYouTube, youtubeReady, currentTime, localTime, youtubeSeek]);
-
-  // ==================== HTML5 VIDEO PLAYER ====================
-
-  // Determinar URL para vídeos não-YouTube
-  const getVideoUrl = useCallback((): string => {
-    if (isYouTube) return "";
-    
-    if (videoId.startsWith("http://") || videoId.startsWith("https://")) {
-      return videoId;
-    }
-
-    if (platform === "google-drive") {
-      const driveMatch = videoId.match(/\/d\/([^/]+)/);
-      if (driveMatch) {
-        return `https://drive.google.com/uc?export=download&id=${driveMatch[1]}`;
-      }
-      return `https://drive.google.com/uc?export=download&id=${videoId}`;
-    }
-
-    return videoId;
-  }, [videoId, platform, isYouTube]);
-
-  const videoUrl = getVideoUrl();
-
-  // Controlar play/pause externo HTML5 (sincronização - comando do servidor)
-  useEffect(() => {
-    if (isYouTube || !videoRef.current || Platform.OS !== "web") return;
-
-    try {
-      if (isPlaying && videoRef.current.paused) {
-        console.log("[HTML5] Executando PLAY (comando do servidor)");
-        videoRef.current.play().catch(console.error);
-      } else if (!isPlaying && !videoRef.current.paused) {
-        console.log("[HTML5] Executando PAUSE (comando do servidor)");
-        videoRef.current.pause();
-      }
-    } catch (e) {
-      console.log("[Player] Erro ao sincronizar play/pause:", e);
-    }
-  }, [isYouTube, isPlaying]);
-
-  // Sincronizar tempo HTML5 quando currentTime mudar significativamente (comando do servidor)
-  useEffect(() => {
-    if (isYouTube || !videoRef.current || isSeeking.current || Platform.OS !== "web") return;
-
-    const diff = Math.abs(currentTime - localTime);
-    if (diff > 2 && currentTime > 0) {
-      console.log("[HTML5] Executando SEEK (comando do servidor):", currentTime, "diff:", diff);
-      isSeeking.current = true;
-      videoRef.current.currentTime = currentTime;
-      setLocalTime(currentTime);
-      setTimeout(() => {
-        isSeeking.current = false;
-      }, 500);
-    }
-  }, [isYouTube, currentTime, localTime]);
-
-  // Atualizar tempo local HTML5
-  useEffect(() => {
-    if (isYouTube || Platform.OS !== "web") return;
-
-    const interval = setInterval(() => {
-      if (videoRef.current && !videoRef.current.paused && !isSeeking.current) {
-        const time = videoRef.current.currentTime;
-        setLocalTime(time);
-
-        if (Date.now() - lastTimeUpdate.current > 250) {
-          onTimeUpdate?.(time);
-          lastTimeUpdate.current = Date.now();
-        }
-      }
-    }, 250);
-
-    return () => clearInterval(interval);
-  }, [isYouTube, onTimeUpdate]);
-
-  // Listener para fullscreen change
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
-  }, []);
+  }, [isYouTube, currentTime, executeSeek, onTimeUpdate, onReady, isSliding]);
 
   // ==================== RENDER ====================
 
@@ -481,6 +368,7 @@ export function VideoPlayerSync({
         bottom: 0,
         justifyContent: "flex-end",
         backgroundColor: showControls ? "rgba(0,0,0,0.4)" : "transparent",
+        zIndex: 10,
       }}
     >
       {/* Área central - Play/Pause grande */}
@@ -535,40 +423,54 @@ export function VideoPlayerSync({
             backgroundColor: "rgba(0,0,0,0.6)",
           }}
         >
-          {/* Barra de progresso */}
-          <Pressable
-            onPress={(e: any) => {
-              if (Platform.OS === "web") {
+          {/* Slider de progresso */}
+          {Platform.OS === "web" ? (
+            <Pressable
+              onPress={(e: any) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const x = e.nativeEvent.pageX - rect.left;
                 const percentage = (x / rect.width) * 100;
-                seekToPercentage(percentage);
-              }
-            }}
-            style={{
-              height: 20,
-              justifyContent: "center",
-              marginBottom: 8,
-            }}
-          >
-            <View
+                const newTime = (percentage / 100) * duration;
+                handleSeek(newTime);
+              }}
               style={{
-                height: 4,
-                backgroundColor: "rgba(255,255,255,0.3)",
-                borderRadius: 2,
-                overflow: "hidden",
+                height: 20,
+                justifyContent: "center",
+                marginBottom: 8,
               }}
             >
               <View
                 style={{
-                  height: "100%",
-                  width: `${progress}%`,
-                  backgroundColor: colors.primary,
+                  height: 4,
+                  backgroundColor: "rgba(255,255,255,0.3)",
                   borderRadius: 2,
+                  overflow: "hidden",
                 }}
-              />
-            </View>
-          </Pressable>
+              >
+                <View
+                  style={{
+                    height: "100%",
+                    width: `${isSliding ? sliderValue : progress}%`,
+                    backgroundColor: colors.primary,
+                    borderRadius: 2,
+                  }}
+                />
+              </View>
+            </Pressable>
+          ) : (
+            <Slider
+              style={{ width: "100%", height: 20, marginBottom: 8 }}
+              minimumValue={0}
+              maximumValue={100}
+              value={isSliding ? sliderValue : progress}
+              onSlidingStart={handleSliderStart}
+              onValueChange={handleSliderChange}
+              onSlidingComplete={handleSliderComplete}
+              minimumTrackTintColor={colors.primary}
+              maximumTrackTintColor="rgba(255,255,255,0.3)"
+              thumbTintColor={colors.primary}
+            />
+          )}
 
           {/* Controles */}
           <View
@@ -602,7 +504,7 @@ export function VideoPlayerSync({
               {/* Volume */}
               <Pressable onPress={toggleMute}>
                 <Ionicons
-                  name={isMuted || volume === 0 ? "volume-mute" : volume < 0.5 ? "volume-low" : "volume-high"}
+                  name={isMuted ? "volume-mute" : "volume-high"}
                   size={20}
                   color="white"
                 />
@@ -613,18 +515,6 @@ export function VideoPlayerSync({
                 {formatTime(localTime)} / {formatTime(duration)}
               </Text>
             </View>
-
-            {/* Lado direito */}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-              {/* Fullscreen */}
-              <Pressable onPress={toggleFullscreen}>
-                <Ionicons
-                  name={isFullscreen ? "contract" : "expand"}
-                  size={20}
-                  color="white"
-                />
-              </Pressable>
-            </View>
           </View>
         </View>
       )}
@@ -633,23 +523,24 @@ export function VideoPlayerSync({
 
   // ==================== YOUTUBE PLAYER ====================
   if (isYouTube && youtubeId) {
-    const youtubeEmbedUrl = `https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&autoplay=0&controls=0&showinfo=0&modestbranding=1&rel=0&iv_load_policy=3&fs=0&playsinline=1&origin=${Platform.OS === "web" ? window.location.origin : ""}`;
+    // Web: usar iframe
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const youtubeEmbedUrl = `https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&autoplay=0&controls=0&showinfo=0&modestbranding=1&rel=0&iv_load_policy=3&fs=0&playsinline=1&origin=${origin}`;
 
-    return (
-      <View
-        className="w-full bg-black rounded-xl overflow-hidden"
-        style={{ aspectRatio: 16/9 }}
-      >
-        {Platform.OS === "web" ? (
+      return (
+        <View
+          className="w-full bg-black rounded-xl overflow-hidden"
+          style={{ aspectRatio: 16/9 }}
+        >
           <div
-            ref={containerRef as any}
             style={{
               position: "relative",
               width: "100%",
               height: "100%",
             }}
           >
-            {/* YouTube IFrame - controles ocultos */}
+            {/* YouTube IFrame - controles ocultos, sem interação */}
             <iframe
               ref={iframeRef as any}
               src={youtubeEmbedUrl}
@@ -660,7 +551,7 @@ export function VideoPlayerSync({
                 width: "100%",
                 height: "100%",
                 border: "none",
-                pointerEvents: "none",
+                pointerEvents: "none", // Impedir toques diretos
               }}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             />
@@ -668,176 +559,105 @@ export function VideoPlayerSync({
             {/* Overlay com nossos controles */}
             {renderControls()}
           </div>
-        ) : (
-          <View className="flex-1 items-center justify-center">
-            <Ionicons name="logo-youtube" size={64} color="#FF0000" />
-            <Text className="text-white text-center mt-4 font-bold text-lg">
-              YouTube
-            </Text>
-            <Text className="text-gray-400 text-sm mt-2 text-center px-6">
-              Abra no navegador para assistir sincronizado
-            </Text>
-          </View>
-        )}
-      </View>
-    );
-  }
+        </View>
+      );
+    }
 
-  // ==================== HTML5 VIDEO PLAYER ====================
-  
-  // Sem URL válida
-  if (!videoUrl) {
+    // Mobile: usar react-native-youtube-iframe
+    if (YoutubePlayer) {
+      return (
+        <View
+          className="w-full bg-black rounded-xl overflow-hidden"
+          style={{ height: playerHeight }}
+        >
+          <View style={{ position: "relative", width: "100%", height: "100%" }}>
+            {/* YouTube Player - controles ocultos */}
+            <View pointerEvents="none" style={{ width: "100%", height: "100%" }}>
+              <YoutubePlayer
+                ref={playerRef}
+                height={playerHeight}
+                width={screenWidth - 32}
+                videoId={youtubeId}
+                play={isPlaying}
+                initialPlayerParams={{
+                  controls: false,
+                  modestbranding: true,
+                  rel: false,
+                  showClosedCaptions: false,
+                }}
+                onReady={() => {
+                  console.log("[YouTube] Player ready");
+                  setPlayerState("ready");
+                  onReady?.();
+                }}
+                onChangeState={(state: string) => {
+                  console.log("[YouTube] State:", state);
+                  switch (state) {
+                    case "playing":
+                      setPlayerState("playing");
+                      break;
+                    case "paused":
+                      setPlayerState("paused");
+                      break;
+                    case "buffering":
+                      setPlayerState("buffering");
+                      break;
+                    case "ended":
+                      setPlayerState("paused");
+                      break;
+                  }
+                }}
+                onProgress={(data: { currentTime: number }) => {
+                  if (!isSeeking.current && !isSliding) {
+                    setLocalTime(data.currentTime);
+                    if (Date.now() - lastTimeUpdate.current > 250) {
+                      onTimeUpdate?.(data.currentTime);
+                      lastTimeUpdate.current = Date.now();
+                    }
+                  }
+                }}
+              />
+            </View>
+            
+            {/* Overlay com nossos controles */}
+            {renderControls()}
+          </View>
+        </View>
+      );
+    }
+
+    // Fallback se YoutubePlayer não estiver disponível
     return (
       <View
         className="w-full bg-black rounded-xl items-center justify-center"
         style={{ aspectRatio: 16/9 }}
       >
-        <Ionicons name="videocam-off" size={64} color="#666" />
+        <Ionicons name="logo-youtube" size={64} color="#FF0000" />
         <Text className="text-white text-center mt-4 font-bold text-lg">
-          URL de vídeo inválida
+          YouTube
         </Text>
-        <Text className="text-gray-400 text-sm mt-2 text-center px-6 leading-5">
-          Cole uma URL direta de vídeo (MP4, WebM) ou link do YouTube
+        <Text className="text-gray-400 text-sm mt-2 text-center px-6">
+          Abra no navegador para assistir sincronizado
         </Text>
       </View>
     );
   }
 
-  // Player HTML5 para vídeos diretos
-  if (Platform.OS === "web") {
-    return (
-      <View
-        className="w-full bg-black rounded-xl overflow-hidden"
-        style={{ aspectRatio: 16/9 }}
-      >
-        <div
-          ref={containerRef as any}
-          style={{
-            position: "relative",
-            width: "100%",
-            height: "100%",
-          }}
-        >
-          <video
-            ref={videoRef as any}
-            src={videoUrl}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "contain",
-              backgroundColor: "#000",
-            }}
-            playsInline
-            crossOrigin="anonymous"
-            onLoadStart={() => setPlayerState("loading")}
-            onLoadedMetadata={(e) => {
-              const video = e.currentTarget;
-              setDuration(video.duration);
-              setPlayerState("ready");
-              
-              // Seek para o tempo inicial
-              if (currentTime > 0 && !initialSeekDone.current) {
-                initialSeekDone.current = true;
-                video.currentTime = currentTime;
-                setLocalTime(currentTime);
-              }
-            }}
-            onCanPlay={() => {
-              if (playerState === "loading") {
-                setPlayerState("ready");
-              }
-            }}
-            onPlay={() => {
-              setPlayerState("playing");
-            }}
-            onPause={() => {
-              setPlayerState("paused");
-            }}
-            onWaiting={() => setPlayerState("buffering")}
-            onPlaying={() => setPlayerState("playing")}
-            onError={(e) => {
-              const video = e.currentTarget;
-              let msg = "Erro ao carregar vídeo";
-              
-              if (video.error) {
-                switch (video.error.code) {
-                  case 1:
-                    msg = "Carregamento abortado";
-                    break;
-                  case 2:
-                    msg = "Erro de rede";
-                    break;
-                  case 3:
-                    msg = "Erro ao decodificar vídeo";
-                    break;
-                  case 4:
-                    msg = "Formato não suportado ou CORS bloqueado";
-                    break;
-                }
-              }
-              
-              setErrorMessage(msg);
-              setPlayerState("error");
-            }}
-          />
-          
-          {/* Overlay de erro */}
-          {playerState === "error" && (
-            <View
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                backgroundColor: "rgba(0,0,0,0.9)",
-                justifyContent: "center",
-                alignItems: "center",
-                padding: 20,
-              }}
-            >
-              <Ionicons name="alert-circle" size={48} color="#EF4444" />
-              <Text style={{ color: "white", fontSize: 16, fontWeight: "bold", marginTop: 12, textAlign: "center" }}>
-                {errorMessage}
-              </Text>
-              <Text style={{ color: "#999", fontSize: 12, marginTop: 8, textAlign: "center" }}>
-                URL: {videoUrl.substring(0, 50)}...
-              </Text>
-              <Pressable
-                onPress={retryLoading}
-                style={{
-                  marginTop: 16,
-                  paddingHorizontal: 20,
-                  paddingVertical: 10,
-                  backgroundColor: colors.primary,
-                  borderRadius: 8,
-                }}
-              >
-                <Text style={{ color: "white", fontWeight: "600" }}>Tentar novamente</Text>
-              </Pressable>
-            </View>
-          )}
-          
-          {/* Controles overlay */}
-          {playerState !== "error" && renderControls()}
-        </div>
-      </View>
-    );
-  }
-
-  // Mobile fallback
+  // Sem URL válida
   return (
     <View
       className="w-full bg-black rounded-xl items-center justify-center"
       style={{ aspectRatio: 16/9 }}
     >
-      <Ionicons name="play-circle" size={64} color="#666" />
+      <Ionicons name="videocam-off" size={64} color="#666" />
       <Text className="text-white text-center mt-4 font-bold text-lg">
-        {title}
+        URL de vídeo inválida
       </Text>
-      <Text className="text-gray-400 text-sm mt-2 text-center px-6">
-        Abra no navegador para assistir
+      <Text className="text-gray-400 text-sm mt-2 text-center px-6 leading-5">
+        Cole uma URL do YouTube para assistir
       </Text>
     </View>
   );
-}
+});
+
+VideoPlayerSync.displayName = "VideoPlayerSync";
