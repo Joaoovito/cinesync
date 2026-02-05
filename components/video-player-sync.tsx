@@ -13,6 +13,9 @@ interface VideoPlayerSyncProps {
   onPlayPause?: (isPlaying: boolean) => void;
   onTimeUpdate?: (currentTime: number) => void;
   onSeek?: (time: number) => void;
+  // Novos callbacks para sincronização via servidor
+  onPlayRequest?: () => void; // Emitir play_request ao servidor
+  onSeekRequest?: (time: number) => void; // Emitir seek_request ao servidor
 }
 
 type PlayerState = "loading" | "ready" | "playing" | "paused" | "error" | "buffering";
@@ -47,6 +50,8 @@ export function VideoPlayerSync({
   currentTime = 0,
   onPlayPause,
   onTimeUpdate,
+  onPlayRequest,
+  onSeekRequest,
 }: VideoPlayerSyncProps) {
   const colors = useColors();
   
@@ -64,23 +69,19 @@ export function VideoPlayerSync({
   // Refs
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const youtubePlayerRef = useRef<any>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const lastSyncTime = useRef(0);
   const isSeeking = useRef(false);
   const initialSeekDone = useRef(false);
   const controlsTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const timeUpdateInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastTimeUpdate = useRef(0);
 
   useKeepAwake();
 
   // Detectar se é YouTube - verificar plataforma OU detectar automaticamente da URL
   const youtubeId = (() => {
-    // Se a plataforma é youtube, extrair o ID
     if (platform === "youtube") {
       return extractYouTubeId(videoId);
     }
-    // Também detectar automaticamente se a URL parece ser do YouTube
     if (videoId.includes("youtube.com") || videoId.includes("youtu.be")) {
       return extractYouTubeId(videoId);
     }
@@ -139,42 +140,93 @@ export function VideoPlayerSync({
     iframeRef.current.contentWindow.postMessage(message, "*");
   }, []);
 
-  // Play YouTube
+  // Play YouTube (execução local após receber comando do servidor)
   const youtubePlay = useCallback(() => {
     sendYouTubeCommand("playVideo");
     setPlayerState("playing");
-    onPlayPause?.(true);
     resetControlsTimeout();
-  }, [sendYouTubeCommand, onPlayPause, resetControlsTimeout]);
+  }, [sendYouTubeCommand, resetControlsTimeout]);
 
-  // Pause YouTube
+  // Pause YouTube (execução local após receber comando do servidor)
   const youtubePause = useCallback(() => {
     sendYouTubeCommand("pauseVideo");
     setPlayerState("paused");
-    onPlayPause?.(false);
     resetControlsTimeout();
-  }, [sendYouTubeCommand, onPlayPause, resetControlsTimeout]);
+  }, [sendYouTubeCommand, resetControlsTimeout]);
 
-  // Seek YouTube
+  // Seek YouTube (execução local após receber comando do servidor)
   const youtubeSeek = useCallback((time: number) => {
     isSeeking.current = true;
     sendYouTubeCommand("seekTo", [time, true]);
     setLocalTime(time);
-    onTimeUpdate?.(time);
     setTimeout(() => {
       isSeeking.current = false;
     }, 500);
     resetControlsTimeout();
-  }, [sendYouTubeCommand, onTimeUpdate, resetControlsTimeout]);
+  }, [sendYouTubeCommand, resetControlsTimeout]);
 
-  // Toggle play/pause YouTube
-  const youtubeTogglePlayPause = useCallback(() => {
-    if (playerState === "playing") {
-      youtubePause();
+  // Toggle play/pause - ENVIA REQUEST AO SERVIDOR
+  const handleTogglePlayPause = useCallback(() => {
+    if (onPlayRequest) {
+      // Nova lógica: emitir evento ao servidor, não executar localmente
+      console.log("[Player] Emitindo play_request ao servidor");
+      onPlayRequest();
     } else {
-      youtubePlay();
+      // Fallback para comportamento antigo
+      if (isYouTube) {
+        if (playerState === "playing") {
+          youtubePause();
+          onPlayPause?.(false);
+        } else {
+          youtubePlay();
+          onPlayPause?.(true);
+        }
+      } else if (videoRef.current) {
+        if (videoRef.current.paused) {
+          videoRef.current.play().catch(console.error);
+        } else {
+          videoRef.current.pause();
+        }
+      }
     }
-  }, [playerState, youtubePlay, youtubePause]);
+    resetControlsTimeout();
+  }, [onPlayRequest, isYouTube, playerState, youtubePlay, youtubePause, onPlayPause, resetControlsTimeout]);
+
+  // Seek - ENVIA REQUEST AO SERVIDOR
+  const handleSeek = useCallback((time: number) => {
+    const newTime = Math.max(0, Math.min(time, duration));
+    
+    if (onSeekRequest) {
+      // Nova lógica: emitir evento ao servidor
+      console.log("[Player] Emitindo seek_request ao servidor:", newTime);
+      onSeekRequest(newTime);
+    } else {
+      // Fallback para comportamento antigo
+      if (isYouTube) {
+        youtubeSeek(newTime);
+      } else if (videoRef.current) {
+        isSeeking.current = true;
+        videoRef.current.currentTime = newTime;
+        setLocalTime(newTime);
+        setTimeout(() => {
+          isSeeking.current = false;
+        }, 500);
+      }
+    }
+    resetControlsTimeout();
+  }, [onSeekRequest, isYouTube, youtubeSeek, duration, resetControlsTimeout]);
+
+  // Seek por porcentagem
+  const seekToPercentage = useCallback((percentage: number) => {
+    if (duration <= 0) return;
+    const newTime = (percentage / 100) * duration;
+    handleSeek(newTime);
+  }, [duration, handleSeek]);
+
+  // Pular segundos
+  const skip = useCallback((seconds: number) => {
+    handleSeek(localTime + seconds);
+  }, [localTime, handleSeek]);
 
   // Mute/Unmute YouTube
   const youtubeToggleMute = useCallback(() => {
@@ -188,193 +240,6 @@ export function VideoPlayerSync({
     resetControlsTimeout();
   }, [isMuted, sendYouTubeCommand, resetControlsTimeout]);
 
-  // Set volume YouTube
-  const youtubeSetVolume = useCallback((vol: number) => {
-    sendYouTubeCommand("setVolume", [vol * 100]);
-    setVolume(vol);
-    if (vol === 0) {
-      setIsMuted(true);
-    } else if (isMuted) {
-      setIsMuted(false);
-      sendYouTubeCommand("unMute");
-    }
-    resetControlsTimeout();
-  }, [sendYouTubeCommand, isMuted, resetControlsTimeout]);
-
-  // Listener para mensagens do YouTube IFrame
-  useEffect(() => {
-    if (!isYouTube || Platform.OS !== "web") return;
-
-    const handleMessage = (event: MessageEvent) => {
-      try {
-        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-        
-        if (data.event === "onReady") {
-          console.log("[YouTube] Player ready");
-          setYoutubeReady(true);
-          setPlayerState("ready");
-          
-          // Seek para o tempo inicial se necessário
-          if (currentTime > 0 && !initialSeekDone.current) {
-            initialSeekDone.current = true;
-            setTimeout(() => {
-              youtubeSeek(currentTime);
-            }, 500);
-          }
-        }
-        
-        if (data.event === "onStateChange") {
-          const state = data.info;
-          // -1: não iniciado, 0: finalizado, 1: reproduzindo, 2: pausado, 3: buffering, 5: vídeo na fila
-          switch (state) {
-            case -1:
-              setPlayerState("loading");
-              break;
-            case 0:
-              setPlayerState("paused");
-              onPlayPause?.(false);
-              break;
-            case 1:
-              setPlayerState("playing");
-              onPlayPause?.(true);
-              break;
-            case 2:
-              setPlayerState("paused");
-              onPlayPause?.(false);
-              break;
-            case 3:
-              setPlayerState("buffering");
-              break;
-          }
-        }
-        
-        if (data.event === "infoDelivery") {
-          if (data.info?.currentTime !== undefined && !isSeeking.current) {
-            setLocalTime(data.info.currentTime);
-            
-            // Enviar atualização a cada 3 segundos
-            if (Date.now() - lastSyncTime.current > 3000) {
-              onTimeUpdate?.(data.info.currentTime);
-              lastSyncTime.current = Date.now();
-            }
-          }
-          if (data.info?.duration !== undefined) {
-            setDuration(data.info.duration);
-          }
-          if (data.info?.volume !== undefined) {
-            setVolume(data.info.volume / 100);
-          }
-          if (data.info?.muted !== undefined) {
-            setIsMuted(data.info.muted);
-          }
-        }
-      } catch (e) {
-        // Ignorar mensagens que não são JSON
-      }
-    };
-
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [isYouTube, currentTime, youtubeSeek, onPlayPause, onTimeUpdate]);
-
-  // Sincronizar tempo do YouTube quando mudar significativamente
-  useEffect(() => {
-    if (!isYouTube || !youtubeReady || isSeeking.current) return;
-
-    const diff = Math.abs(currentTime - localTime);
-    if (diff > 3 && currentTime > 0) {
-      console.log("[YouTube] Sincronizando tempo:", currentTime, "diff:", diff);
-      youtubeSeek(currentTime);
-    }
-  }, [isYouTube, youtubeReady, currentTime, localTime, youtubeSeek]);
-
-  // Sincronizar play/pause do YouTube
-  useEffect(() => {
-    if (!isYouTube || !youtubeReady) return;
-
-    if (isPlaying && playerState !== "playing") {
-      youtubePlay();
-    } else if (!isPlaying && playerState === "playing") {
-      youtubePause();
-    }
-  }, [isYouTube, youtubeReady, isPlaying, playerState, youtubePlay, youtubePause]);
-
-  // ==================== HTML5 VIDEO PLAYER CONTROLS ====================
-
-  // Determinar URL para vídeos não-YouTube
-  const getVideoUrl = useCallback((): string => {
-    if (isYouTube) return "";
-    
-    // Se já é uma URL completa, usar diretamente
-    if (videoId.startsWith("http://") || videoId.startsWith("https://")) {
-      return videoId;
-    }
-
-    // Google Drive - converter para URL de download direto
-    if (platform === "google-drive") {
-      const driveMatch = videoId.match(/\/d\/([^/]+)/);
-      if (driveMatch) {
-        return `https://drive.google.com/uc?export=download&id=${driveMatch[1]}`;
-      }
-      return `https://drive.google.com/uc?export=download&id=${videoId}`;
-    }
-
-    return videoId;
-  }, [videoId, platform, isYouTube]);
-
-  const videoUrl = getVideoUrl();
-
-  // Toggle play/pause HTML5
-  const togglePlayPause = useCallback(() => {
-    if (isYouTube) {
-      youtubeTogglePlayPause();
-      return;
-    }
-    
-    if (!videoRef.current) return;
-    
-    if (videoRef.current.paused) {
-      videoRef.current.play().catch(console.error);
-    } else {
-      videoRef.current.pause();
-    }
-    resetControlsTimeout();
-  }, [isYouTube, youtubeTogglePlayPause, resetControlsTimeout]);
-
-  // Seek HTML5
-  const seekTo = useCallback((time: number) => {
-    if (isYouTube) {
-      youtubeSeek(time);
-      return;
-    }
-    
-    if (!videoRef.current) return;
-    
-    isSeeking.current = true;
-    const newTime = Math.max(0, Math.min(time, duration));
-    videoRef.current.currentTime = newTime;
-    setLocalTime(newTime);
-    onTimeUpdate?.(newTime);
-    
-    setTimeout(() => {
-      isSeeking.current = false;
-    }, 500);
-    
-    resetControlsTimeout();
-  }, [isYouTube, youtubeSeek, duration, onTimeUpdate, resetControlsTimeout]);
-
-  // Seek por porcentagem
-  const seekToPercentage = useCallback((percentage: number) => {
-    if (duration <= 0) return;
-    const newTime = (percentage / 100) * duration;
-    seekTo(newTime);
-  }, [duration, seekTo]);
-
-  // Pular segundos
-  const skip = useCallback((seconds: number) => {
-    seekTo(localTime + seconds);
-  }, [localTime, seekTo]);
-
   // Toggle mute
   const toggleMute = useCallback(() => {
     if (isYouTube) {
@@ -387,26 +252,6 @@ export function VideoPlayerSync({
     setIsMuted(!isMuted);
     resetControlsTimeout();
   }, [isYouTube, youtubeToggleMute, isMuted, resetControlsTimeout]);
-
-  // Ajustar volume
-  const changeVolume = useCallback((newVolume: number) => {
-    if (isYouTube) {
-      youtubeSetVolume(newVolume);
-      return;
-    }
-    
-    if (!videoRef.current) return;
-    const vol = Math.max(0, Math.min(1, newVolume));
-    videoRef.current.volume = vol;
-    setVolume(vol);
-    if (vol === 0) {
-      setIsMuted(true);
-    } else if (isMuted) {
-      setIsMuted(false);
-      videoRef.current.muted = false;
-    }
-    resetControlsTimeout();
-  }, [isYouTube, youtubeSetVolume, isMuted, resetControlsTimeout]);
 
   // Toggle fullscreen
   const toggleFullscreen = useCallback(() => {
@@ -439,14 +284,135 @@ export function VideoPlayerSync({
     }
   }, [isYouTube]);
 
-  // Controlar play/pause externo HTML5 (sincronização)
+  // Listener para mensagens do YouTube IFrame
+  useEffect(() => {
+    if (!isYouTube || Platform.OS !== "web") return;
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+        
+        if (data.event === "onReady") {
+          console.log("[YouTube] Player ready");
+          setYoutubeReady(true);
+          setPlayerState("ready");
+          
+          // Seek para o tempo inicial se necessário
+          if (currentTime > 0 && !initialSeekDone.current) {
+            initialSeekDone.current = true;
+            setTimeout(() => {
+              youtubeSeek(currentTime);
+            }, 500);
+          }
+        }
+        
+        if (data.event === "onStateChange") {
+          const state = data.info;
+          switch (state) {
+            case -1:
+              setPlayerState("loading");
+              break;
+            case 0:
+              setPlayerState("paused");
+              break;
+            case 1:
+              setPlayerState("playing");
+              break;
+            case 2:
+              setPlayerState("paused");
+              break;
+            case 3:
+              setPlayerState("buffering");
+              break;
+          }
+        }
+        
+        if (data.event === "infoDelivery") {
+          if (data.info?.currentTime !== undefined && !isSeeking.current) {
+            setLocalTime(data.info.currentTime);
+            
+            // Enviar atualização de tempo ao parent
+            if (Date.now() - lastTimeUpdate.current > 250) {
+              onTimeUpdate?.(data.info.currentTime);
+              lastTimeUpdate.current = Date.now();
+            }
+          }
+          if (data.info?.duration !== undefined) {
+            setDuration(data.info.duration);
+          }
+          if (data.info?.volume !== undefined) {
+            setVolume(data.info.volume / 100);
+          }
+          if (data.info?.muted !== undefined) {
+            setIsMuted(data.info.muted);
+          }
+        }
+      } catch (e) {
+        // Ignorar mensagens que não são JSON
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [isYouTube, currentTime, youtubeSeek, onTimeUpdate]);
+
+  // Sincronizar play/pause do YouTube quando isPlaying mudar (comando do servidor)
+  useEffect(() => {
+    if (!isYouTube || !youtubeReady) return;
+
+    if (isPlaying && playerState !== "playing") {
+      console.log("[YouTube] Executando PLAY (comando do servidor)");
+      youtubePlay();
+    } else if (!isPlaying && playerState === "playing") {
+      console.log("[YouTube] Executando PAUSE (comando do servidor)");
+      youtubePause();
+    }
+  }, [isYouTube, youtubeReady, isPlaying, playerState, youtubePlay, youtubePause]);
+
+  // Sincronizar tempo do YouTube quando currentTime mudar significativamente (comando do servidor)
+  useEffect(() => {
+    if (!isYouTube || !youtubeReady || isSeeking.current) return;
+
+    const diff = Math.abs(currentTime - localTime);
+    if (diff > 2 && currentTime > 0) {
+      console.log("[YouTube] Executando SEEK (comando do servidor):", currentTime, "diff:", diff);
+      youtubeSeek(currentTime);
+    }
+  }, [isYouTube, youtubeReady, currentTime, localTime, youtubeSeek]);
+
+  // ==================== HTML5 VIDEO PLAYER ====================
+
+  // Determinar URL para vídeos não-YouTube
+  const getVideoUrl = useCallback((): string => {
+    if (isYouTube) return "";
+    
+    if (videoId.startsWith("http://") || videoId.startsWith("https://")) {
+      return videoId;
+    }
+
+    if (platform === "google-drive") {
+      const driveMatch = videoId.match(/\/d\/([^/]+)/);
+      if (driveMatch) {
+        return `https://drive.google.com/uc?export=download&id=${driveMatch[1]}`;
+      }
+      return `https://drive.google.com/uc?export=download&id=${videoId}`;
+    }
+
+    return videoId;
+  }, [videoId, platform, isYouTube]);
+
+  const videoUrl = getVideoUrl();
+
+  // Controlar play/pause externo HTML5 (sincronização - comando do servidor)
   useEffect(() => {
     if (isYouTube || !videoRef.current || Platform.OS !== "web") return;
 
     try {
       if (isPlaying && videoRef.current.paused) {
+        console.log("[HTML5] Executando PLAY (comando do servidor)");
         videoRef.current.play().catch(console.error);
       } else if (!isPlaying && !videoRef.current.paused) {
+        console.log("[HTML5] Executando PAUSE (comando do servidor)");
         videoRef.current.pause();
       }
     } catch (e) {
@@ -454,13 +420,13 @@ export function VideoPlayerSync({
     }
   }, [isYouTube, isPlaying]);
 
-  // Sincronizar tempo HTML5 quando mudar significativamente
+  // Sincronizar tempo HTML5 quando currentTime mudar significativamente (comando do servidor)
   useEffect(() => {
     if (isYouTube || !videoRef.current || isSeeking.current || Platform.OS !== "web") return;
 
     const diff = Math.abs(currentTime - localTime);
-    if (diff > 3 && currentTime > 0) {
-      console.log("[Player] Sincronizando tempo:", currentTime, "diff:", diff);
+    if (diff > 2 && currentTime > 0) {
+      console.log("[HTML5] Executando SEEK (comando do servidor):", currentTime, "diff:", diff);
       isSeeking.current = true;
       videoRef.current.currentTime = currentTime;
       setLocalTime(currentTime);
@@ -479,9 +445,9 @@ export function VideoPlayerSync({
         const time = videoRef.current.currentTime;
         setLocalTime(time);
 
-        if (Date.now() - lastSyncTime.current > 3000) {
+        if (Date.now() - lastTimeUpdate.current > 250) {
           onTimeUpdate?.(time);
-          lastSyncTime.current = Date.now();
+          lastTimeUpdate.current = Date.now();
         }
       }
     }, 250);
@@ -519,7 +485,7 @@ export function VideoPlayerSync({
     >
       {/* Área central - Play/Pause grande */}
       <Pressable
-        onPress={togglePlayPause}
+        onPress={handleTogglePlayPause}
         style={{
           position: "absolute",
           top: "50%",
@@ -615,7 +581,7 @@ export function VideoPlayerSync({
             {/* Lado esquerdo */}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
               {/* Play/Pause */}
-              <Pressable onPress={togglePlayPause}>
+              <Pressable onPress={handleTogglePlayPause}>
                 <Ionicons
                   name={playerState === "playing" ? "pause" : "play"}
                   size={24}
@@ -667,7 +633,6 @@ export function VideoPlayerSync({
 
   // ==================== YOUTUBE PLAYER ====================
   if (isYouTube && youtubeId) {
-    // URL do YouTube com API habilitada e controles ocultos
     const youtubeEmbedUrl = `https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&autoplay=0&controls=0&showinfo=0&modestbranding=1&rel=0&iv_load_policy=3&fs=0&playsinline=1&origin=${Platform.OS === "web" ? window.location.origin : ""}`;
 
     return (
@@ -695,7 +660,7 @@ export function VideoPlayerSync({
                 width: "100%",
                 height: "100%",
                 border: "none",
-                pointerEvents: "none", // Desabilita interação direta com o iframe
+                pointerEvents: "none",
               }}
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             />
@@ -784,12 +749,9 @@ export function VideoPlayerSync({
             }}
             onPlay={() => {
               setPlayerState("playing");
-              onPlayPause?.(true);
-              resetControlsTimeout();
             }}
             onPause={() => {
               setPlayerState("paused");
-              onPlayPause?.(false);
             }}
             onWaiting={() => setPlayerState("buffering")}
             onPlaying={() => setPlayerState("playing")}

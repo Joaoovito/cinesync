@@ -87,6 +87,85 @@ export const appRouter = router({
       .query(async ({ input }) => {
         return db.getVideoSyncState(input.roomId);
       }),
+
+    // Evento: Solicitar play (não executa localmente, envia para o servidor)
+    playRequest: protectedProcedure
+      .input(z.object({ roomId: z.number(), currentTime: z.number() }))
+      .mutation(async ({ input }) => {
+        // Atualizar estado no banco - todos os clientes vão receber via polling
+        await db.updateVideoSyncState(input.roomId, {
+          isPlaying: true,
+          currentTime: input.currentTime,
+        });
+        console.log(`[Sync] Play command for room ${input.roomId} at ${input.currentTime}s`);
+        return { success: true, command: "play", currentTime: input.currentTime };
+      }),
+
+    // Evento: Solicitar pause
+    pauseRequest: protectedProcedure
+      .input(z.object({ roomId: z.number(), currentTime: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.updateVideoSyncState(input.roomId, {
+          isPlaying: false,
+          currentTime: input.currentTime,
+        });
+        console.log(`[Sync] Pause command for room ${input.roomId} at ${input.currentTime}s`);
+        return { success: true, command: "pause", currentTime: input.currentTime };
+      }),
+
+    // Evento: Solicitar seek
+    seekRequest: protectedProcedure
+      .input(z.object({ roomId: z.number(), seekTime: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.updateVideoSyncState(input.roomId, {
+          currentTime: input.seekTime,
+        });
+        console.log(`[Sync] Seek command for room ${input.roomId} to ${input.seekTime}s`);
+        return { success: true, command: "seek", seekTime: input.seekTime };
+      }),
+
+    // Time sync do Host - atualiza o tempo atual no servidor
+    timeSync: protectedProcedure
+      .input(
+        z.object({
+          roomId: z.number(),
+          currentTime: z.number(),
+          timestamp: z.number(), // Date.now() do cliente
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        // Verificar se o usuário é o host (criador da sala)
+        const room = await db.getRoomById(input.roomId);
+        if (!room || room.creatorId !== ctx.user.id) {
+          // Apenas o host pode enviar time_sync
+          return { success: false, error: "Only host can sync time" };
+        }
+
+        // Atualizar tempo no banco
+        await db.updateVideoSyncState(input.roomId, {
+          currentTime: input.currentTime,
+        });
+
+        return {
+          success: true,
+          hostTime: input.currentTime,
+          serverTimestamp: Date.now(),
+        };
+      }),
+
+    // Obter estado de sincronização com informação do host
+    getSyncState: publicProcedure
+      .input(z.object({ roomId: z.number() }))
+      .query(async ({ input }) => {
+        const room = await db.getRoomById(input.roomId);
+        const syncState = await db.getVideoSyncState(input.roomId);
+        
+        return {
+          ...syncState,
+          hostId: room?.creatorId || null,
+          serverTimestamp: Date.now(),
+        };
+      }),
   }),
 
   participants: router({

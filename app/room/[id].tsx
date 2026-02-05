@@ -33,57 +33,145 @@ export default function RoomScreen() {
     limit: 50,
   }, { refetchInterval: 2000 });
   const { data: participantCount } = trpc.participants.count.useQuery({ roomId }, { refetchInterval: 3000 });
-  const { data: videoState, refetch: refetchVideoState } = trpc.rooms.getVideoState.useQuery({ roomId }, { refetchInterval: 1500 });
+  
+  // Query de sincronização - polling rápido para receber comandos
+  const { data: syncState, refetch: refetchSyncState } = trpc.rooms.getSyncState.useQuery(
+    { roomId },
+    { refetchInterval: 500 } // Polling a cada 500ms para sincronização rápida
+  );
 
   // State
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [notification, setNotification] = useState<{ message: string; type: NotificationType } | null>(null);
+  const [isHost, setIsHost] = useState(false);
   
-  // Refs para evitar loops
-  const lastSavedTime = useRef(0);
+  // Refs para evitar loops e controlar sincronização
   const previousParticipantCount = useRef<number | undefined>(undefined);
   const isInitialized = useRef(false);
+  const lastServerState = useRef<{ isPlaying: boolean | null; currentTime: number }>({
+    isPlaying: null,
+    currentTime: 0,
+  });
+  const localTimeRef = useRef(0); // Tempo local do player
+  const timeSyncInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingCommand = useRef<"play" | "pause" | "seek" | null>(null);
 
-  // Mutations
+  // Mutations para enviar comandos ao servidor
+  const playRequestMutation = trpc.rooms.playRequest.useMutation({
+    onSuccess: () => {
+      console.log("[Sync] Play request enviado ao servidor");
+      refetchSyncState();
+    },
+  });
+
+  const pauseRequestMutation = trpc.rooms.pauseRequest.useMutation({
+    onSuccess: () => {
+      console.log("[Sync] Pause request enviado ao servidor");
+      refetchSyncState();
+    },
+  });
+
+  const seekRequestMutation = trpc.rooms.seekRequest.useMutation({
+    onSuccess: () => {
+      console.log("[Sync] Seek request enviado ao servidor");
+      refetchSyncState();
+    },
+  });
+
+  const timeSyncMutation = trpc.rooms.timeSync.useMutation();
+
   const sendMessageMutation = trpc.chat.send.useMutation({
     onSuccess: () => {
       refetchMessages();
     },
   });
 
-  const updateVideoStateMutation = trpc.rooms.updateVideoState.useMutation();
+  // Verificar se o usuário é o host (criador da sala)
+  useEffect(() => {
+    if (room && user) {
+      const userIsHost = room.creatorId === user.id;
+      setIsHost(userIsHost);
+      console.log("[Room] User is host:", userIsHost, "creatorId:", room.creatorId, "userId:", user.id);
+    }
+  }, [room, user]);
 
   // Inicializar estado do vídeo quando carregar da sala
   useEffect(() => {
-    if (videoState && !isInitialized.current) {
-      console.log("[Room] Inicializando com estado salvo:", videoState);
-      setIsPlaying(videoState.isPlaying ?? false);
-      setCurrentTime(videoState.currentTime ?? 0);
-      lastSavedTime.current = videoState.currentTime ?? 0;
+    if (syncState && !isInitialized.current) {
+      console.log("[Room] Inicializando com estado salvo:", syncState);
+      setIsPlaying(syncState.isPlaying ?? false);
+      setCurrentTime(syncState.currentTime ?? 0);
+      localTimeRef.current = syncState.currentTime ?? 0;
       isInitialized.current = true;
+      lastServerState.current = {
+        isPlaying: syncState.isPlaying ?? null,
+        currentTime: syncState.currentTime ?? 0,
+      };
     }
-  }, [videoState]);
+  }, [syncState]);
 
-  // Sincronizar estado do vídeo quando mudar no servidor (outros usuários)
+  // ==================== SINCRONIZAÇÃO VIA POLLING ====================
+  
+  // Receber comandos do servidor (play/pause/seek)
   useEffect(() => {
-    if (videoState && isInitialized.current) {
-      // Sincronizar play/pause
-      if (videoState.isPlaying !== null && videoState.isPlaying !== isPlaying) {
-        setIsPlaying(videoState.isPlaying);
-      }
+    if (!syncState || !isInitialized.current) return;
+
+    // Detectar mudança de play/pause
+    if (syncState.isPlaying !== null && syncState.isPlaying !== undefined && syncState.isPlaying !== lastServerState.current.isPlaying) {
+      console.log("[Sync] Comando recebido:", syncState.isPlaying ? "PLAY" : "PAUSE");
+      setIsPlaying(syncState.isPlaying);
+      lastServerState.current.isPlaying = syncState.isPlaying;
+    }
+
+    // Detectar mudança de tempo (seek) - tolerância de 2 segundos
+    if (syncState.currentTime !== null && syncState.currentTime !== undefined) {
+      const serverTime = syncState.currentTime;
+      const localTime = localTimeRef.current;
+      const diff = Math.abs(serverTime - localTime);
       
-      // Sincronizar tempo se diferença for maior que 3 segundos
-      if (videoState.currentTime !== null) {
-        const diff = Math.abs(videoState.currentTime - currentTime);
-        if (diff > 3) {
-          console.log("[Room] Sincronizando tempo:", videoState.currentTime);
-          setCurrentTime(videoState.currentTime);
-        }
+      // Se a diferença for maior que 2 segundos, fazer seek
+      if (diff > 2) {
+        console.log("[Sync] Correção de tempo:", serverTime, "diff:", diff.toFixed(1), "s");
+        setCurrentTime(serverTime);
+        localTimeRef.current = serverTime;
+        lastServerState.current.currentTime = serverTime;
       }
     }
-  }, [videoState?.isPlaying, videoState?.currentTime]);
+  }, [syncState?.isPlaying, syncState?.currentTime]);
+
+  // ==================== TIME SYNC DO HOST ====================
+  
+  // Host envia time_sync a cada 2 segundos
+  useEffect(() => {
+    if (!isHost || !isInitialized.current) return;
+
+    // Limpar interval anterior
+    if (timeSyncInterval.current) {
+      clearInterval(timeSyncInterval.current);
+    }
+
+    // Enviar time_sync a cada 2 segundos
+    timeSyncInterval.current = setInterval(() => {
+      if (isPlaying) {
+        const currentVideoTime = localTimeRef.current;
+        console.log("[Host] Enviando time_sync:", currentVideoTime.toFixed(1));
+        
+        timeSyncMutation.mutate({
+          roomId,
+          currentTime: currentVideoTime,
+          timestamp: Date.now(),
+        });
+      }
+    }, 2000);
+
+    return () => {
+      if (timeSyncInterval.current) {
+        clearInterval(timeSyncInterval.current);
+      }
+    };
+  }, [isHost, isPlaying, roomId, timeSyncMutation]);
 
   // Formatar mensagens do chat
   useEffect(() => {
@@ -117,34 +205,48 @@ export default function RoomScreen() {
     }
   }, [participantCount]);
 
-  // Handler para play/pause
-  const handlePlayPause = useCallback((playing: boolean) => {
-    console.log("[Room] Play/Pause:", playing);
-    setIsPlaying(playing);
-    
-    // Salvar no banco de dados para sincronizar com outros usuários
-    updateVideoStateMutation.mutate({
-      roomId,
-      isPlaying: playing,
-      currentTime: Math.floor(currentTime),
-    });
-  }, [roomId, currentTime, updateVideoStateMutation]);
+  // ==================== HANDLERS DE CONTROLE ====================
 
-  // Handler para atualização de tempo
-  const handleTimeUpdate = useCallback((time: number) => {
-    setCurrentTime(time);
-    
-    // Salvar no banco de dados a cada 3 segundos para persistência
-    const timeDiff = Math.abs(time - lastSavedTime.current);
-    if (timeDiff >= 3) {
-      console.log("[Room] Salvando tempo:", Math.floor(time));
-      lastSavedTime.current = time;
-      updateVideoStateMutation.mutate({
+  // Handler para play/pause - ENVIA REQUEST AO SERVIDOR, NÃO EXECUTA LOCALMENTE
+  const handlePlayRequest = useCallback(() => {
+    if (isPlaying) {
+      // Solicitar PAUSE ao servidor
+      console.log("[Control] Enviando pause_request");
+      pauseRequestMutation.mutate({
         roomId,
-        currentTime: Math.floor(time),
+        currentTime: Math.floor(localTimeRef.current),
+      });
+    } else {
+      // Solicitar PLAY ao servidor
+      console.log("[Control] Enviando play_request");
+      playRequestMutation.mutate({
+        roomId,
+        currentTime: Math.floor(localTimeRef.current),
       });
     }
-  }, [roomId, updateVideoStateMutation]);
+  }, [isPlaying, roomId, playRequestMutation, pauseRequestMutation]);
+
+  // Handler para seek - ENVIA REQUEST AO SERVIDOR
+  const handleSeekRequest = useCallback((seekTime: number) => {
+    console.log("[Control] Enviando seek_request:", seekTime);
+    seekRequestMutation.mutate({
+      roomId,
+      seekTime: Math.floor(seekTime),
+    });
+  }, [roomId, seekRequestMutation]);
+
+  // Handler para atualização de tempo local (do player)
+  const handleTimeUpdate = useCallback((time: number) => {
+    localTimeRef.current = time;
+    setCurrentTime(time);
+  }, []);
+
+  // Handler quando o player muda play/pause localmente (para sincronizar estado visual)
+  const handleLocalPlayPause = useCallback((playing: boolean) => {
+    // Este callback é chamado pelo player quando o estado muda
+    // Não enviamos request aqui, apenas atualizamos o estado visual
+    // O request é enviado pelo handlePlayRequest
+  }, []);
 
   // Handler para enviar mensagem
   const handleSendMessage = useCallback((message: string) => {
@@ -155,25 +257,17 @@ export default function RoomScreen() {
     });
   }, [roomId, sendMessageMutation]);
 
-  // Estado para nova mensagem
-  const [newMessage, setNewMessage] = useState("");
-
-  const onSendMessage = useCallback(() => {
-    if (!newMessage.trim()) return;
-    handleSendMessage(newMessage);
-    setNewMessage("");
-  }, [newMessage, handleSendMessage]);
-
   // Handler para sair da sala
   const handleLeaveRoom = useCallback(() => {
-    // Salvar tempo atual antes de sair
-    updateVideoStateMutation.mutate({
-      roomId,
-      currentTime: Math.floor(currentTime),
-      isPlaying: false,
-    });
+    // Se for o host, pausar antes de sair
+    if (isHost) {
+      pauseRequestMutation.mutate({
+        roomId,
+        currentTime: Math.floor(localTimeRef.current),
+      });
+    }
     router.back();
-  }, [roomId, currentTime, updateVideoStateMutation, router]);
+  }, [roomId, isHost, pauseRequestMutation, router]);
 
   if (roomLoading) {
     return (
@@ -217,9 +311,16 @@ export default function RoomScreen() {
         style={{ borderColor: colors.border }}
       >
         <View className="flex-1">
-          <Text className="text-lg font-semibold text-foreground" numberOfLines={1}>
-            {room.name}
-          </Text>
+          <View className="flex-row items-center gap-2">
+            <Text className="text-lg font-semibold text-foreground" numberOfLines={1}>
+              {room.name}
+            </Text>
+            {isHost && (
+              <View className="bg-primary/20 px-2 py-0.5 rounded">
+                <Text className="text-xs text-primary font-semibold">HOST</Text>
+              </View>
+            )}
+          </View>
           <View className="flex-row items-center mt-1">
             <View className="w-2 h-2 rounded-full bg-success mr-2" />
             <Text className="text-xs text-muted">
@@ -244,8 +345,10 @@ export default function RoomScreen() {
           title={room.videoTitle}
           isPlaying={isPlaying}
           currentTime={currentTime}
-          onPlayPause={handlePlayPause}
+          onPlayPause={handleLocalPlayPause}
           onTimeUpdate={handleTimeUpdate}
+          onPlayRequest={handlePlayRequest}
+          onSeekRequest={handleSeekRequest}
         />
       </View>
 
@@ -255,7 +358,7 @@ export default function RoomScreen() {
         style={{ borderColor: colors.border }}
       >
         <TouchableOpacity
-          onPress={() => handlePlayPause(!isPlaying)}
+          onPress={handlePlayRequest}
           className="flex-row items-center gap-2"
           activeOpacity={0.7}
         >
@@ -272,7 +375,9 @@ export default function RoomScreen() {
         <View className="flex-row items-center gap-4">
           <View className="flex-row items-center gap-1">
             <Ionicons name="sync" size={14} color={colors.success} />
-            <Text className="text-xs text-muted">Sincronizado</Text>
+            <Text className="text-xs text-muted">
+              {isHost ? "Host" : "Sincronizado"}
+            </Text>
           </View>
         </View>
       </View>

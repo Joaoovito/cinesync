@@ -149,3 +149,11 @@
 - [x] Adicionar opção YouTube na tela de criação de sala
 - [x] Corrigir detecção automática de URLs do YouTube no player
 - [x] Testar player com URL do YouTube
+
+## Sincronização via Eventos (WebSocket-like)
+- [x] Criar endpoints de eventos no servidor (play_request, pause_request, seek_request)
+- [x] Modificar botões para emitir eventos em vez de executar ações locais
+- [x] Implementar listeners de comandos (play_command, pause_command, seek_command)
+- [x] Implementar time_sync do Host a cada 2 segundos
+- [x] Implementar correção automática de tempo nos participantes (tolerância 2s)
+- [ ] Testar sincronização entre múltiplos usuários
