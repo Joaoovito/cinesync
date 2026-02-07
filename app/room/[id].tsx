@@ -1,397 +1,186 @@
-/**
- * Tela de Sala - Sincronização via Socket.IO
- * 
- * Arquitetura:
- * 1. Conecta ao servidor Socket.IO ao entrar na sala
- * 2. Botões de controle emitem eventos ao servidor
- * 3. Servidor retransmite para todos na sala
- * 4. Player executa ações apenas ao receber eventos
- * 5. Host envia time_sync a cada 2 segundos
- */
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Clipboard, SafeAreaView, StatusBar } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { VideoPlayerSync } from '../../components/video-player-sync';
+import { io, Socket } from 'socket.io-client';
 
-import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
-import { useState, useEffect, useRef, useCallback } from "react";
-import { ScreenContainer } from "@/components/screen-container";
-import { useRouter, useLocalSearchParams } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { useColors } from "@/hooks/use-colors";
-import { trpc } from "@/lib/trpc";
-import { useAuth } from "@/hooks/use-auth";
-import { VideoPlayerSync, VideoPlayerSyncRef } from "@/components/video-player-sync";
-import { ChatRoom } from "@/components/chat-room";
-import { NotificationToast, type NotificationType } from "@/components/notification-toast";
-import { useSocket } from "@/hooks/use-socket";
-
-interface ChatMessage {
-  id: number;
-  userId: number;
-  message: string;
-  createdAt: Date;
-  isOwn: boolean;
-  userName?: string;
-}
+// ⚠️ SEU IP
+const SOCKET_URL = 'http://192.168.0.5:3000'; 
 
 export default function RoomScreen() {
   const router = useRouter();
-  const colors = useColors();
-  const { id } = useLocalSearchParams();
-  const { user } = useAuth();
-  const roomId = Number(id);
-  const roomIdStr = String(roomId);
+  const { id, isHost, videoId } = useLocalSearchParams();
+  const isOwner = isHost === 'true';
+  const currentVideoId = (videoId as string) || "dQw4w9WgXcQ";
 
-  // Queries
-  const { data: room, isLoading: roomLoading } = trpc.rooms.get.useQuery({ id: roomId });
-  const { data: messages, refetch: refetchMessages } = trpc.chat.messages.useQuery({
-    roomId,
-    limit: 50,
-  }, { refetchInterval: 2000 });
-  const { data: participantCount } = trpc.participants.count.useQuery({ roomId }, { refetchInterval: 3000 });
-
-  // State
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [notification, setNotification] = useState<{ message: string; type: NotificationType } | null>(null);
-  const [isHost, setIsHost] = useState(false);
+  const [targetTime, setTargetTime] = useState(0); 
   
-  // Refs
-  const playerRef = useRef<VideoPlayerSyncRef>(null);
-  const previousParticipantCount = useRef<number | undefined>(undefined);
-  const timeSyncInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const localTimeRef = useRef(0);
+  // --- CORREÇÃO: Estado para saber se o player já carregou ---
+  const [isPlayerReady, setIsPlayerReady] = useState(false);
+  const pendingActionRef = useRef<{ type: string, value: number } | null>(null);
 
-  // Mutations
-  const sendMessageMutation = trpc.chat.send.useMutation({
-    onSuccess: () => {
-      refetchMessages();
-    },
-  });
+  const socketRef = useRef<Socket | null>(null);
+  const currentHostTimeRef = useRef(0);
+  const lastHeartbeatRef = useRef(0);
 
-  // Verificar se o usuário é o host (criador da sala)
   useEffect(() => {
-    if (room && user) {
-      const userIsHost = room.creatorId === user.id;
-      setIsHost(userIsHost);
-      console.log("[Room] User is host:", userIsHost, "creatorId:", room.creatorId, "userId:", user.id);
-    }
-  }, [room, user]);
+    socketRef.current = io(SOCKET_URL);
+    socketRef.current.emit('join_room', id);
 
-  // ==================== SOCKET.IO ====================
+    socketRef.current.on('receive_action', (data) => {
+      console.log(`📥 Recebido: ${data.type} | Valor: ${data.value}`);
 
-  // Callback para receber ações de sincronização
-  const handleSyncAction = useCallback((action: {
-    action: "play" | "pause" | "seek";
-    currentTime?: number;
-    seekTime?: number;
-  }) => {
-    console.log("[Room] Recebido sync_action:", action);
-    
-    switch (action.action) {
-      case "play":
-        setIsPlaying(true);
-        if (action.currentTime !== undefined) {
-          setCurrentTime(action.currentTime);
-          localTimeRef.current = action.currentTime;
-        }
-        break;
-      case "pause":
-        setIsPlaying(false);
-        if (action.currentTime !== undefined) {
-          setCurrentTime(action.currentTime);
-          localTimeRef.current = action.currentTime;
-        }
-        break;
-      case "seek":
-        if (action.seekTime !== undefined) {
-          setCurrentTime(action.seekTime);
-          localTimeRef.current = action.seekTime;
-          playerRef.current?.seekTo(action.seekTime);
-        }
-        break;
-    }
-  }, []);
+      // SE O PLAYER AINDA NÃO ESTIVER PRONTO, GUARDA NA FILA
+      if (!isPlayerReady && data.forceSync) {
+        console.log("⏳ Player carregando... Ação guardada para depois.");
+        pendingActionRef.current = data;
+        return;
+      }
 
-  // Callback para receber time_sync do host
-  const handleTimeSync = useCallback((sync: {
-    currentTime: number;
-    isPlaying: boolean;
-  }) => {
-    // Não aplicar se for o host (ele é quem envia)
-    if (isHost) return;
-    
-    const localTime = localTimeRef.current;
-    const diff = Math.abs(sync.currentTime - localTime);
-    
-    // Se diferença > 2 segundos, corrigir
-    if (diff > 2) {
-      console.log("[Room] Correção de tempo do host:", sync.currentTime, "diff:", diff.toFixed(1));
-      setCurrentTime(sync.currentTime);
-      localTimeRef.current = sync.currentTime;
-      playerRef.current?.seekTo(sync.currentTime);
-    }
-    
-    // Sincronizar play/pause
-    if (sync.isPlaying !== isPlaying) {
-      setIsPlaying(sync.isPlaying);
-    }
-  }, [isHost, isPlaying]);
-
-  // Callback para estado inicial da sala
-  const handleRoomState = useCallback((state: {
-    currentTime: number;
-    isPlaying: boolean;
-  }) => {
-    console.log("[Room] Estado inicial da sala:", state);
-    setCurrentTime(state.currentTime);
-    setIsPlaying(state.isPlaying);
-    localTimeRef.current = state.currentTime;
-  }, []);
-
-  // Callback para usuário entrou
-  const handleUserJoined = useCallback((data: { userId: string }) => {
-    setNotification({
-      message: "Um novo usuário entrou na sala",
-      type: "user-joined",
+      processAction(data);
     });
-  }, []);
-
-  // Callback para usuário saiu
-  const handleUserLeft = useCallback((data: { userId: string }) => {
-    setNotification({
-      message: "Um usuário saiu da sala",
-      type: "user-left",
-    });
-  }, []);
-
-  // Hook do Socket.IO
-  const { isConnected, connectionError, emitSyncAction, emitTimeSync } = useSocket({
-    roomId: roomIdStr,
-    userId: String(user?.id || "anonymous"),
-    isHost,
-    onSyncAction: handleSyncAction,
-    onTimeSync: handleTimeSync,
-    onRoomState: handleRoomState,
-    onUserJoined: handleUserJoined,
-    onUserLeft: handleUserLeft,
-  });
-
-  // ==================== TIME SYNC DO HOST ====================
-
-  // Host envia time_sync a cada 2 segundos
-  useEffect(() => {
-    if (!isHost || !isConnected) return;
-
-    // Limpar interval anterior
-    if (timeSyncInterval.current) {
-      clearInterval(timeSyncInterval.current);
-    }
-
-    // Enviar time_sync a cada 2 segundos
-    timeSyncInterval.current = setInterval(() => {
-      const currentVideoTime = localTimeRef.current;
-      console.log("[Host] Enviando time_sync:", currentVideoTime.toFixed(1));
-      emitTimeSync(currentVideoTime, isPlaying);
-    }, 2000);
 
     return () => {
-      if (timeSyncInterval.current) {
-        clearInterval(timeSyncInterval.current);
-      }
+      socketRef.current?.disconnect();
     };
-  }, [isHost, isConnected, isPlaying, emitTimeSync]);
+  }, [id, isPlayerReady]); // Adicionei isPlayerReady nas dependências
 
-  // ==================== HANDLERS ====================
-
-  // Handler para play request - EMITE EVENTO
-  const handlePlayRequest = useCallback(() => {
-    console.log("[Room] Emitindo play_request");
-    emitSyncAction("play", localTimeRef.current);
-  }, [emitSyncAction]);
-
-  // Handler para pause request - EMITE EVENTO
-  const handlePauseRequest = useCallback(() => {
-    console.log("[Room] Emitindo pause_request");
-    emitSyncAction("pause", localTimeRef.current);
-  }, [emitSyncAction]);
-
-  // Handler para seek request - EMITE EVENTO
-  const handleSeekRequest = useCallback((seekTime: number) => {
-    console.log("[Room] Emitindo seek_request:", seekTime);
-    emitSyncAction("seek", undefined, seekTime);
-  }, [emitSyncAction]);
-
-  // Handler para atualização de tempo local
-  const handleTimeUpdate = useCallback((time: number) => {
-    localTimeRef.current = time;
-  }, []);
-
-  // Formatar mensagens do chat
-  useEffect(() => {
-    if (messages) {
-      const formatted = messages.map((msg: any) => ({
-        ...msg,
-        isOwn: msg.userId === user?.id,
-        userName: msg.userId === user?.id ? "Você" : `Usuário ${msg.userId}`,
-      }));
-      setChatMessages(formatted);
+  // Função separada para processar ações (usada na chegada e no desbloqueio)
+  const processAction = (data: any) => {
+    if (data.type === 'play') {
+      setIsPlaying(true);
+      if (Math.abs(currentHostTimeRef.current - data.value) > 1.5) {
+        setTargetTime(data.value);
+      }
     }
-  }, [messages, user?.id]);
-
-  // Handler para enviar mensagem
-  const handleSendMessage = useCallback((message: string) => {
-    if (!message.trim()) return;
-    sendMessageMutation.mutate({
-      roomId,
-      message: message.trim(),
-    });
-  }, [roomId, sendMessageMutation]);
-
-  // Handler para sair da sala
-  const handleLeaveRoom = useCallback(() => {
-    // Se for o host, pausar antes de sair
-    if (isHost) {
-      emitSyncAction("pause", localTimeRef.current);
+    
+    if (data.type === 'pause') {
+      setIsPlaying(false);
+      setTargetTime(data.value);
     }
-    router.back();
-  }, [isHost, emitSyncAction, router]);
 
-  if (roomLoading) {
-    return (
-      <ScreenContainer className="items-center justify-center">
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text className="text-muted mt-4">Carregando sala...</Text>
-      </ScreenContainer>
-    );
-  }
+    if (data.type === 'seek' || data.type === 'sync_time') {
+      setTargetTime(data.value);
+    }
+  };
 
-  if (!room) {
-    return (
-      <ScreenContainer className="items-center justify-center">
-        <Ionicons name="alert-circle" size={48} color={colors.error} />
-        <Text className="text-foreground mt-4">Sala não encontrada</Text>
-        <TouchableOpacity 
-          onPress={() => router.back()}
-          className="mt-4 bg-primary px-6 py-2 rounded-full"
-        >
-          <Text className="text-white font-semibold">Voltar</Text>
-        </TouchableOpacity>
-      </ScreenContainer>
-    );
-  }
+  // --- O PLAYER NOS AVISA QUANDO ESTÁ PRONTO ---
+  const handlePlayerReady = () => {
+    console.log("✅ Player Pronto! Verificando ações pendentes...");
+    setIsPlayerReady(true);
+    
+    // Se tiver algo guardado (o estado inicial da sala), executa agora
+    if (pendingActionRef.current) {
+      console.log("🚀 Executando ação pendente:", pendingActionRef.current);
+      const action = pendingActionRef.current;
+      
+      // Força o estado inicial
+      setIsPlaying(action.type === 'play');
+      setTargetTime(action.value);
+      
+      pendingActionRef.current = null; // Limpa a fila
+    }
+  };
+
+  const handleTimeUpdate = (currentTime: number) => {
+    currentHostTimeRef.current = currentTime; 
+
+    if (isOwner && isPlaying) {
+      const now = Date.now();
+      if (now - lastHeartbeatRef.current > 5000) {
+        socketRef.current?.emit('send_action', {
+          roomId: id,
+          type: 'sync_time', 
+          value: currentTime
+        });
+        lastHeartbeatRef.current = now;
+      }
+    }
+  };
+
+  const handlePlayRequest = () => {
+    if (isOwner) {
+      const newState = !isPlaying;
+      setIsPlaying(newState);
+      socketRef.current?.emit('send_action', {
+        roomId: id,
+        type: newState ? 'play' : 'pause',
+        value: currentHostTimeRef.current 
+      });
+      lastHeartbeatRef.current = Date.now();
+    } else {
+      alert('Apenas o Host controla o vídeo!');
+    }
+  };
+
+  const handleSeekRequest = (newTime: number) => {
+    if (isOwner) {
+      currentHostTimeRef.current = newTime;
+      socketRef.current?.emit('send_action', {
+        roomId: id,
+        type: 'seek',
+        value: newTime
+      });
+      lastHeartbeatRef.current = Date.now();
+    }
+  };
+
+  const copyCode = () => { Clipboard.setString(id as string); alert('Copiado!'); };
+  const leaveRoom = () => { socketRef.current?.disconnect(); router.replace('/'); };
 
   return (
-    <ScreenContainer className="p-0 flex-1">
-      {/* Notificações */}
-      {notification && (
-        <NotificationToast
-          message={notification.message}
-          type={notification.type}
-          duration={3000}
-          onDismiss={() => setNotification(null)}
-        />
-      )}
-      
-      {/* Header */}
-      <View
-        className="flex-row items-center justify-between px-4 py-3 border-b border-border"
-        style={{ borderColor: colors.border }}
-      >
-        <View className="flex-1">
-          <View className="flex-row items-center gap-2">
-            <Text className="text-lg font-semibold text-foreground" numberOfLines={1}>
-              {room.name}
-            </Text>
-            {isHost && (
-              <View className="bg-primary/20 px-2 py-0.5 rounded">
-                <Text className="text-xs text-primary font-semibold">HOST</Text>
-              </View>
-            )}
-          </View>
-          <View className="flex-row items-center mt-1 gap-3">
-            <View className="flex-row items-center">
-              <View className="w-2 h-2 rounded-full bg-success mr-2" />
-              <Text className="text-xs text-muted">
-                {participantCount || 0} {participantCount === 1 ? "pessoa" : "pessoas"}
-              </Text>
-            </View>
-            <View className="flex-row items-center">
-              <Ionicons 
-                name={isConnected ? "wifi" : "wifi-outline"} 
-                size={12} 
-                color={isConnected ? colors.success : colors.error} 
-              />
-              <Text className="text-xs text-muted ml-1">
-                {isConnected ? "Conectado" : connectionError || "Desconectado"}
-              </Text>
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" />
+      <SafeAreaView style={{ flex: 1 }}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={leaveRoom} style={styles.backButton}><Ionicons name="arrow-back" size={24} color="white" /></TouchableOpacity>
+          <View style={styles.headerInfo}>
+            <Text style={styles.roomTitle}>Sala: {id}</Text>
+            <View style={[styles.roleBadge, { backgroundColor: isOwner ? '#4ade80' : '#facc15' }]}>
+              <Text style={styles.roleText}>{isOwner ? 'HOST' : 'ESPECTADOR'}</Text>
             </View>
           </View>
+          <TouchableOpacity onPress={copyCode} style={styles.copyButton}><Ionicons name="copy-outline" size={20} color="white" /></TouchableOpacity>
         </View>
-        <TouchableOpacity
-          onPress={handleLeaveRoom}
-          className="w-10 h-10 rounded-full bg-error/10 items-center justify-center"
-          activeOpacity={0.7}
-        >
-          <Ionicons name="exit" size={20} color={colors.error} />
-        </TouchableOpacity>
-      </View>
 
-      {/* Player de Vídeo */}
-      <View className="px-4 py-3">
-        <VideoPlayerSync
-          ref={playerRef}
-          videoId={room.videoId}
-          platform={room.platform}
-          title={room.videoTitle}
-          isPlaying={isPlaying}
-          currentTime={currentTime}
-          onPlayRequest={handlePlayRequest}
-          onPauseRequest={handlePauseRequest}
-          onSeekRequest={handleSeekRequest}
-          onTimeUpdate={handleTimeUpdate}
-        />
-      </View>
-
-      {/* Controles de Vídeo */}
-      <View 
-        className="flex-row items-center justify-between px-4 py-3 bg-surface border-b border-border"
-        style={{ borderColor: colors.border }}
-      >
-        <TouchableOpacity
-          onPress={isPlaying ? handlePauseRequest : handlePlayRequest}
-          className="flex-row items-center gap-2"
-          activeOpacity={0.7}
-        >
-          <Ionicons
-            name={isPlaying ? "pause-circle" : "play-circle"}
-            size={28}
-            color={colors.primary}
+        <View style={styles.playerWrapper}>
+          <VideoPlayerSync 
+            videoId={currentVideoId}
+            isPlaying={isPlaying} 
+            onPlayRequest={handlePlayRequest} 
+            isOwner={isOwner}
+            onTimeUpdate={handleTimeUpdate} 
+            onSeekRequest={handleSeekRequest}
+            remoteTime={targetTime}
+            // Passamos a função para o componente nos avisar
+            onReady={handlePlayerReady} 
           />
-          <Text className="text-sm font-medium text-foreground">
-            {isPlaying ? "Reproduzindo" : "Pausado"}
-          </Text>
-        </TouchableOpacity>
-
-        <View className="flex-row items-center gap-4">
-          <View className="flex-row items-center gap-1">
-            <Ionicons 
-              name={isConnected ? "sync" : "sync-outline"} 
-              size={14} 
-              color={isConnected ? colors.success : colors.muted} 
-            />
-            <Text className="text-xs text-muted">
-              {isHost ? "Host" : "Sincronizado"}
-            </Text>
-          </View>
         </View>
-      </View>
 
-      {/* Chat */}
-      <ChatRoom
-        messages={chatMessages}
-        onSendMessage={handleSendMessage}
-        isSending={sendMessageMutation.isPending}
-        currentUserId={user?.id}
-      />
-    </ScreenContainer>
+        <View style={styles.contentArea}>
+           <Text style={styles.statusText}>{socketRef.current?.connected ? '🟢 Conectado' : '🔴 ...'}</Text>
+           <Text style={styles.placeholderText}>
+             {isOwner ? "Host (Controle Total)" : "Sincronizando..."}
+           </Text>
+        </View>
+      </SafeAreaView>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#0f0f12' },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#222', marginTop: 30 },
+  backButton: { padding: 8 },
+  headerInfo: { alignItems: 'center' },
+  roomTitle: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  roleBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginTop: 4 },
+  roleText: { fontSize: 10, fontWeight: 'bold', color: 'black' },
+  copyButton: { padding: 8, backgroundColor: '#333', borderRadius: 8 },
+  playerWrapper: { width: '100%', aspectRatio: 16/9, backgroundColor: 'black', marginTop: 10 },
+  contentArea: { flex: 1, padding: 20, alignItems: 'center' },
+  statusText: { color: '#4ade80', fontSize: 12, marginBottom: 10 },
+  placeholderText: { color: '#888', fontSize: 14 }
+});

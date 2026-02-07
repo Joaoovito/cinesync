@@ -2,16 +2,13 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
-    "types": [
-      "node",
-      "nativewind/types"
-    ],
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
     "paths": {
       "@/*": [
         "./*"
-      ],
-      "@shared/*": [
-        "./shared/*"
       ]
     }
   },
@@ -21,9 +18,5 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts",
     "nativewind-env.d.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist"
   ]
 }

@@ -120,7 +120,7 @@ export function VideoPlayerSync({ videoId, socket, roomId }: VideoPlayerSyncProp
           height={300}
           play={playing}
           videoId={videoId}
-          onChangeState={(state) => {
+          onChangeState={(state: string) => {
              if (state === 'ended') setPlaying(false);
           }}
           onReady={onReady} // <--- CRÍTICO

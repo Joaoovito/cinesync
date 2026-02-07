@@ -1,378 +1,213 @@
-import { ScrollView, Text, View, TouchableOpacity, TextInput, Alert } from "react-native";
-import { useState, useEffect } from "react";
-import { ScreenContainer } from "@/components/screen-container";
-import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import { useColors } from "@/hooks/use-colors";
-import { trpc } from "@/lib/trpc";
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, Modal, Image, Alert, SafeAreaView } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
+import { io, Socket } from 'socket.io-client';
+import { BrowserSelector } from '../../components/browser-selector';
 
-type Platform = "youtube" | "direct" | "google-drive";
+// ⚠️ COLOQUE SEU IP CORRETO AQUI
+const SOCKET_URL = 'http://192.168.0.5:3000';
 
-const PLATFORMS: { label: string; value: Platform; icon: string; description: string }[] = [
-  { 
-    label: "YouTube", 
-    value: "youtube", 
-    icon: "logo-youtube",
-    description: "Vídeos do YouTube (links youtube.com ou youtu.be)"
-  },
-  { 
-    label: "URL Direta", 
-    value: "direct", 
-    icon: "link",
-    description: "MP4, WebM, M3U8 ou qualquer URL de vídeo"
-  },
-  { 
-    label: "Google Drive", 
-    value: "google-drive", 
-    icon: "logo-google",
-    description: "Vídeos compartilhados do Google Drive"
-  },
-];
-
-// Detectar automaticamente a plataforma baseada na URL
-function detectPlatform(url: string): Platform | null {
-  if (!url) return null;
-  
-  // YouTube
-  if (url.includes("youtube.com") || url.includes("youtu.be")) {
-    return "youtube";
-  }
-  
-  // Google Drive
-  if (url.includes("drive.google.com")) {
-    return "google-drive";
-  }
-  
-  // URL direta (se tem extensão de vídeo ou é uma URL válida)
-  if (url.match(/\.(mp4|webm|mov|m3u8|mkv|avi)(\?|$)/i) || url.startsWith("http")) {
-    return "direct";
-  }
-  
-  return null;
-}
-
-// Extrair ID do YouTube de várias formas de URL
-function extractYouTubeId(url: string): string | null {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=)([^&\s]+)/,
-    /(?:youtu\.be\/)([^?\s]+)/,
-    /(?:youtube\.com\/embed\/)([^?\s]+)/,
-    /(?:youtube\.com\/v\/)([^?\s]+)/,
-  ];
-  
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
-  }
-  
-  return null;
-}
-
-export default function CreateRoomScreen() {
+export default function HomeScreen() {
   const router = useRouter();
-  const colors = useColors();
-  const [roomName, setRoomName] = useState("");
-  const [selectedPlatform, setSelectedPlatform] = useState<Platform>("youtube");
-  const [videoUrl, setVideoUrl] = useState("");
-  const [videoTitle, setVideoTitle] = useState("");
+  
+  // Estados da Tela
+  const [rooms, setRooms] = useState<any[]>([]);
+  const [showSourceModal, setShowSourceModal] = useState(false); // Modal de escolha (YouTube, Web, etc)
+  const [showBrowser, setShowBrowser] = useState(false);         // Modal do Navegador
+  const [browserUrl, setBrowserUrl] = useState('https://google.com');
+  
+  const socketRef = useRef<Socket | null>(null);
 
-  const createRoomMutation = trpc.rooms.create.useMutation({
-    onSuccess: (room) => {
-      console.log("[CreateRoom] Room created:", room);
-      Alert.alert("Sucesso", "Sala criada com sucesso!");
-      trpc.useUtils().rooms.list.invalidate();
-      router.replace("/(tabs)");
-    },
-    onError: (error) => {
-      Alert.alert("Erro", error.message || "Falha ao criar a sala");
-    },
-  });
-
-  // Auto-detectar plataforma quando URL muda
+  // --- 1. CONEXÃO COM O SERVIDOR (Para pegar a lista) ---
   useEffect(() => {
-    const detected = detectPlatform(videoUrl);
-    if (detected && detected !== selectedPlatform) {
-      setSelectedPlatform(detected);
-    }
-  }, [videoUrl]);
+    socketRef.current = io(SOCKET_URL);
+    
+    socketRef.current.on('rooms_update', (data) => {
+      console.log("Lista de salas atualizada:", data);
+      setRooms(data);
+    });
 
-  // Extrair ID do Google Drive da URL
-  const extractGoogleDriveId = (url: string): string => {
-    // Formatos suportados:
-    // https://drive.google.com/file/d/FILE_ID/view
-    // https://drive.google.com/open?id=FILE_ID
-    // https://drive.google.com/uc?id=FILE_ID
-    const patterns = [
-      /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/,
-      /drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/,
-      /drive\.google\.com\/uc\?id=([a-zA-Z0-9_-]+)/,
-    ];
-    
-    for (const pattern of patterns) {
-      const match = url.match(pattern);
-      if (match) return match[1];
-    }
-    
-    return url; // Retornar como está se não encontrar padrão
+    return () => {
+      socketRef.current?.disconnect();
+    };
+  }, []);
+
+  const generateRoomId = () => 'sala-' + Math.floor(1000 + Math.random() * 9000);
+
+  // --- 2. AÇÕES DE NAVEGAÇÃO ---
+
+  // Passo A: Abre o menu e escolhe a fonte
+  const openBrowser = (url: string) => {
+    setShowSourceModal(false); // Fecha menu de fontes
+    setBrowserUrl(url);        // Define URL inicial
+    setShowBrowser(true);      // Abre navegador
   };
 
-  const handleCreateRoom = async () => {
-    if (!roomName.trim()) {
-      Alert.alert("Erro", "Digite um nome para a sala");
-      return;
-    }
-
-    if (!videoUrl.trim()) {
-      Alert.alert("Erro", "Digite a URL do vídeo");
-      return;
-    }
-
-    if (!videoTitle.trim()) {
-      Alert.alert("Erro", "Digite o título do vídeo");
-      return;
-    }
-
-    // Processar URL baseado na plataforma
-    let processedVideoId = videoUrl.trim();
+  // Passo B: O Navegador retornou um vídeo! Criar a sala.
+  const handleVideoSelect = (videoId: string) => {
+    setShowBrowser(false);
+    const newRoomId = generateRoomId();
     
-    if (selectedPlatform === "youtube") {
-      const youtubeId = extractYouTubeId(videoUrl);
-      if (!youtubeId) {
-        Alert.alert("Erro", "URL do YouTube inválida. Use um link como youtube.com/watch?v=... ou youtu.be/...");
-        return;
-      }
-      processedVideoId = youtubeId;
-    } else if (selectedPlatform === "google-drive") {
-      processedVideoId = extractGoogleDriveId(videoUrl);
-    }
-
-    createRoomMutation.mutate({
-      name: roomName,
-      videoTitle: videoTitle,
-      platform: selectedPlatform,
-      videoUrl: videoUrl,
-      videoId: processedVideoId,
+    // Navega para a sala como DONO (Host) e com o vídeo escolhido
+    router.push({
+      pathname: '/room/[id]',
+      params: { id: newRoomId, isHost: 'true', videoId: videoId }
     });
   };
 
-  const handleCancel = () => {
-    router.back();
+  // Passo C: Entrar em uma sala existente da lista
+  const joinRoom = (roomId: string) => {
+    router.push({
+      pathname: '/room/[id]',
+      params: { id: roomId, isHost: 'false' }
+    });
   };
 
-  const getPlaceholder = () => {
-    switch (selectedPlatform) {
-      case "youtube":
-        return "https://www.youtube.com/watch?v=...";
-      case "google-drive":
-        return "https://drive.google.com/file/d/...";
-      default:
-        return "https://exemplo.com/video.mp4";
-    }
-  };
+  // --- 3. RENDERIZAÇÃO ---
 
-  const getHelpText = () => {
-    switch (selectedPlatform) {
-      case "youtube":
-        return "Cole o link do vídeo do YouTube (youtube.com/watch?v=... ou youtu.be/...)";
-      case "google-drive":
-        return "Cole o link de compartilhamento do Google Drive";
-      default:
-        return "Cole a URL direta do vídeo (MP4, WebM, M3U8)";
-    }
-  };
+  const renderRoomItem = ({ item }: { item: any }) => (
+    <TouchableOpacity style={styles.roomCard} onPress={() => joinRoom(item.id)}>
+      <View style={styles.roomThumbnail}>
+        <Ionicons name="play-circle" size={40} color="rgba(255,255,255,0.8)" />
+        {item.isPlaying && (
+          <View style={styles.liveBadge}>
+            <Text style={styles.liveText}>LIVE</Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.roomInfo}>
+        <Text style={styles.roomTitle}>{item.id}</Text>
+        <Text style={styles.roomViewers}>
+          <Ionicons name="people" size={14} color="#888" /> {item.viewers} assistindo
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={24} color="#444" />
+    </TouchableOpacity>
+  );
 
   return (
-    <ScreenContainer className="p-4">
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
-        <View className="flex-row items-center justify-between mb-6">
-          <Text className="text-2xl font-bold text-foreground">Criar Sala</Text>
-          <TouchableOpacity onPress={handleCancel}>
-            <Ionicons name="close" size={24} color={colors.foreground} />
-          </TouchableOpacity>
-        </View>
-
-        <View className="gap-6">
-          {/* Nome da Sala */}
-          <View>
-            <Text className="text-sm font-semibold text-foreground mb-2">Nome da Sala</Text>
-            <TextInput
-              placeholder="Ex: Sessão de Filme"
-              placeholderTextColor={colors.muted}
-              value={roomName}
-              onChangeText={setRoomName}
-              className="bg-surface rounded-lg px-4 py-3 border border-border text-foreground"
-              style={{
-                borderColor: colors.border,
-                color: colors.foreground,
-              }}
-            />
-          </View>
-
-          {/* Título do Vídeo */}
-          <View>
-            <Text className="text-sm font-semibold text-foreground mb-2">Título do Vídeo</Text>
-            <TextInput
-              placeholder="Ex: Inception (2010)"
-              placeholderTextColor={colors.muted}
-              value={videoTitle}
-              onChangeText={setVideoTitle}
-              className="bg-surface rounded-lg px-4 py-3 border border-border text-foreground"
-              style={{
-                borderColor: colors.border,
-                color: colors.foreground,
-              }}
-            />
-          </View>
-
-          {/* Seleção de Plataforma */}
-          <View>
-            <Text className="text-sm font-semibold text-foreground mb-2">Fonte do Vídeo</Text>
-            <View className="gap-2">
-              {PLATFORMS.map((platform) => (
-                <TouchableOpacity
-                  key={platform.value}
-                  onPress={() => setSelectedPlatform(platform.value)}
-                  className={`flex-row items-center p-4 rounded-lg border ${
-                    selectedPlatform === platform.value
-                      ? "bg-primary/10 border-primary"
-                      : "bg-surface border-border"
-                  }`}
-                  style={{
-                    borderColor:
-                      selectedPlatform === platform.value ? colors.primary : colors.border,
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <View 
-                    className="w-10 h-10 rounded-full items-center justify-center mr-3"
-                    style={{ 
-                      backgroundColor: selectedPlatform === platform.value 
-                        ? platform.value === "youtube" ? "#FF0000" : colors.primary 
-                        : colors.surface 
-                    }}
-                  >
-                    <Ionicons
-                      name={platform.icon as any}
-                      size={20}
-                      color={selectedPlatform === platform.value ? "white" : colors.muted}
-                    />
-                  </View>
-                  <View className="flex-1">
-                    <Text
-                      className={`font-semibold ${
-                        selectedPlatform === platform.value
-                          ? "text-primary"
-                          : "text-foreground"
-                      }`}
-                    >
-                      {platform.label}
-                    </Text>
-                    <Text className="text-xs text-muted mt-0.5">
-                      {platform.description}
-                    </Text>
-                  </View>
-                  {selectedPlatform === platform.value && (
-                    <Ionicons name="checkmark-circle" size={24} color={colors.primary} />
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* URL do Vídeo */}
-          <View>
-            <Text className="text-sm font-semibold text-foreground mb-2">
-              {selectedPlatform === "youtube"
-                ? "Link do YouTube"
-                : selectedPlatform === "google-drive"
-                ? "Link do Google Drive"
-                : "URL do Vídeo"}
-            </Text>
-            <TextInput
-              placeholder={getPlaceholder()}
-              placeholderTextColor={colors.muted}
-              value={videoUrl}
-              onChangeText={setVideoUrl}
-              className="bg-surface rounded-lg px-4 py-3 border border-border text-foreground"
-              style={{
-                borderColor: colors.border,
-                color: colors.foreground,
-              }}
-              multiline
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Text className="text-xs text-muted mt-2">
-              {getHelpText()}
-            </Text>
-          </View>
-
-          {/* Informação sobre sincronização */}
-          <View className="bg-primary/5 rounded-lg p-4 border border-primary/20">
-            <View className="flex-row items-start">
-              <Ionicons name="sync" size={20} color={colors.primary} />
-              <View className="ml-3 flex-1">
-                <Text className="text-sm font-semibold text-foreground">
-                  Sincronização em Tempo Real
-                </Text>
-                <Text className="text-xs text-muted mt-1">
-                  Todos os participantes assistirão ao vídeo sincronizados. 
-                  Quando alguém pausar ou avançar, todos verão a mesma cena.
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Dica sobre formatos suportados */}
-          <View className="bg-surface rounded-lg p-4 border border-border">
-            <View className="flex-row items-start">
-              <Ionicons name="bulb" size={20} color={colors.warning} />
-              <View className="ml-3 flex-1">
-                <Text className="text-sm font-semibold text-foreground">
-                  Dica: Formatos Suportados
-                </Text>
-                <Text className="text-xs text-muted mt-1">
-                  • YouTube - Vídeos públicos e não listados{"\n"}
-                  • MP4, WebM, MOV - Vídeos comuns{"\n"}
-                  • M3U8, HLS - Streaming adaptativo{"\n"}
-                  • Google Drive - Vídeos compartilhados
-                </Text>
-              </View>
-            </View>
+    <View style={styles.container}>
+      <SafeAreaView style={{flex: 1}}>
+        
+        {/* CABEÇALHO */}
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Salas Ativas</Text>
+          <View style={styles.onlineBadge}>
+            <View style={styles.dot} />
+            <Text style={styles.onlineText}>Online</Text>
           </View>
         </View>
 
-        {/* Botões de ação */}
-        <View className="gap-3 mt-8">
-          <TouchableOpacity
-            onPress={handleCreateRoom}
-            disabled={createRoomMutation.isPending}
-            className="bg-primary rounded-full py-4 items-center justify-center flex-row gap-2"
-            activeOpacity={0.8}
-          >
-            {createRoomMutation.isPending ? (
-              <>
-                <Ionicons name="hourglass" size={20} color="white" />
-                <Text className="text-white font-semibold">Criando...</Text>
-              </>
-            ) : (
-              <>
-                <Ionicons name="add-circle" size={20} color="white" />
-                <Text className="text-white font-semibold">Criar Sala</Text>
-              </>
-            )}
-          </TouchableOpacity>
+        {/* LISTA DE SALAS */}
+        {rooms.length === 0 ? (
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons name="movie-roll" size={80} color="#333" />
+            <Text style={styles.emptyText}>Nenhuma sala ativa no momento.</Text>
+            <Text style={styles.emptySubText}>Toque em "+" para criar a primeira!</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={rooms}
+            keyExtractor={(item) => item.id}
+            renderItem={renderRoomItem}
+            contentContainerStyle={{ padding: 20 }}
+          />
+        )}
 
-          <TouchableOpacity
-            onPress={handleCancel}
-            className="bg-surface rounded-full py-4 items-center justify-center border border-border"
-            style={{ borderColor: colors.border }}
-            activeOpacity={0.8}
-          >
-            <Text className="text-foreground font-semibold">Cancelar</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-    </ScreenContainer>
+        {/* BOTÃO FLUTUANTE (FAB) PARA CRIAR */}
+        <TouchableOpacity style={styles.fab} onPress={() => setShowSourceModal(true)}>
+          <Ionicons name="add" size={32} color="white" />
+        </TouchableOpacity>
+
+      </SafeAreaView>
+
+      {/* MODAL 1: ESCOLHER FONTE (YouTube, Web, etc) */}
+      <Modal visible={showSourceModal} transparent animationType="fade" onRequestClose={() => setShowSourceModal(false)}>
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowSourceModal(false)} activeOpacity={1}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>O que vamos assistir?</Text>
+            
+            <View style={styles.grid}>
+              {/* YOUTUBE */}
+              <TouchableOpacity style={styles.sourceItem} onPress={() => openBrowser('https://m.youtube.com')}>
+                <View style={[styles.iconCircle, {backgroundColor: '#FF0000'}]}>
+                   <Ionicons name="logo-youtube" size={32} color="white" />
+                </View>
+                <Text style={styles.sourceText}>YouTube</Text>
+              </TouchableOpacity>
+
+              {/* WEB / GOOGLE */}
+              <TouchableOpacity style={styles.sourceItem} onPress={() => openBrowser('https://google.com')}>
+                <View style={[styles.iconCircle, {backgroundColor: '#3b82f6'}]}>
+                   <Ionicons name="globe" size={32} color="white" />
+                </View>
+                <Text style={styles.sourceText}>Navegador</Text>
+              </TouchableOpacity>
+              
+              {/* VIMEO (Exemplo Extra) */}
+              <TouchableOpacity style={styles.sourceItem} onPress={() => openBrowser('https://vimeo.com')}>
+                <View style={[styles.iconCircle, {backgroundColor: '#1ab7ea'}]}>
+                   <Text style={{color:'white', fontWeight:'bold'}}>V</Text>
+                </View>
+                <Text style={styles.sourceText}>Vimeo</Text>
+              </TouchableOpacity>
+
+              {/* CANCELAR */}
+              <TouchableOpacity style={styles.sourceItem} onPress={() => setShowSourceModal(false)}>
+                <View style={[styles.iconCircle, {backgroundColor: '#333'}]}>
+                   <Ionicons name="close" size={32} color="white" />
+                </View>
+                <Text style={styles.sourceText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* MODAL 2: O NAVEGADOR EM SI */}
+      <Modal visible={showBrowser} animationType="slide" onRequestClose={() => setShowBrowser(false)}>
+        <BrowserSelector 
+          initialUrl={browserUrl}
+          onVideoSelect={handleVideoSelect} 
+          onClose={() => setShowBrowser(false)}
+        />
+      </Modal>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#09090b' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 40, paddingBottom: 10, backgroundColor: '#09090b', borderBottomWidth: 1, borderBottomColor: '#1f1f22' },
+  headerTitle: { fontSize: 24, fontWeight: 'bold', color: 'white' },
+  onlineBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1f1f22', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#4ade80', marginRight: 6 },
+  onlineText: { color: '#ddd', fontSize: 12 },
+
+  // Lista Vazia
+  emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', opacity: 0.5 },
+  emptyText: { color: 'white', fontSize: 18, marginTop: 20, fontWeight: 'bold' },
+  emptySubText: { color: '#888', marginTop: 5 },
+
+  // Card da Sala
+  roomCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#18181b', borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#27272a' },
+  roomThumbnail: { width: 80, height: 60, backgroundColor: '#27272a', borderRadius: 8, justifyContent: 'center', alignItems: 'center', marginRight: 15, overflow: 'hidden' },
+  liveBadge: { position: 'absolute', top: 4, right: 4, backgroundColor: '#ef4444', paddingHorizontal: 4, borderRadius: 2 },
+  liveText: { color: 'white', fontSize: 8, fontWeight: 'bold' },
+  roomInfo: { flex: 1 },
+  roomTitle: { color: 'white', fontSize: 16, fontWeight: 'bold', marginBottom: 4 },
+  roomViewers: { color: '#888', fontSize: 12 },
+
+  // Botão FAB
+  fab: { position: 'absolute', bottom: 30, right: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#6366F1', shadowOpacity: 0.5 },
+
+  // Modal de Fontes
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#18181b', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 25 },
+  modalTitle: { color: 'white', fontSize: 18, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  sourceItem: { width: '45%', alignItems: 'center', marginBottom: 20, backgroundColor: '#27272a', padding: 15, borderRadius: 12 },
+  iconCircle: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
+  sourceText: { color: '#ddd', fontWeight: '600' }
+});
