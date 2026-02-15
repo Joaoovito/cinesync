@@ -1,1 +1,0 @@
-ALTER TABLE `videoSyncState` DROP INDEX `videoSyncState_roomId_unique`;

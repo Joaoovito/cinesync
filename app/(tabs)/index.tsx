@@ -1,97 +1,202 @@
-import { ScrollView, Text, View, TouchableOpacity, TextInput, Alert, StyleSheet } from "react-native";
-import { useState } from "react";
-// Importante: Usar View normal se ScreenContainer estiver instável, 
-// mas vou manter a estrutura que você confirmou que funciona.
-import { ScreenContainer } from "@/components/screen-container"; 
-import { useRouter } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import React, { useState, useEffect } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Modal, SafeAreaView, Alert, ScrollView, FlatList, RefreshControl } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { io, Socket } from 'socket.io-client'; // Importante para ouvir as salas
+import { BrowserSelector } from '../../components/browser-selector';
 
-export default function HomeScreen() {
+// 👇 CONFIRME SEU IP AQUI
+const SOCKET_URL = 'http://192.168.0.5:3000'; 
+
+interface RoomInfo {
+  id: string;
+  userCount: number;
+  hasVideo: boolean;
+}
+
+export default function Home() {
   const router = useRouter();
-  const [joinId, setJoinId] = useState("");
+  const [username, setUsername] = useState('');
+  const [showBrowser, setShowBrowser] = useState(false);
+  const [targetUrl, setTargetUrl] = useState('https://google.com');
+  
+  // Estado das Salas Ativas
+  const [activeRooms, setActiveRooms] = useState<RoomInfo[]>([]);
+  const [socket, setSocket] = useState<Socket | null>(null);
 
-  const handleJoinRoom = () => {
-    if (!joinId.trim()) {
-      Alert.alert("Erro", "Digite o ID da sala para entrar.");
+  // Conecta na Home para ver as salas em tempo real
+  useEffect(() => {
+    const newSocket = io(SOCKET_URL, {
+      transports: ['websocket'],
+      query: { displayName: 'Observador' }
+    });
+    setSocket(newSocket);
+
+    newSocket.on('active_rooms', (rooms: RoomInfo[]) => {
+      console.log("Salas ativas:", rooms);
+      setActiveRooms(rooms);
+    });
+
+    return () => { newSocket.disconnect(); };
+  }, []);
+
+  const openSource = (url: string) => {
+    if (!username.trim()) {
+      Alert.alert('Quase lá!', 'Digite seu nome antes.');
       return;
     }
-    // Navega para a sala com o ID digitado
-    router.push(`/room/${joinId.trim()}`);
+    setTargetUrl(url);
+    setShowBrowser(true);
+  };
+
+  const handleVideoSelected = (url: string, type?: 'youtube' | 'direct' | 'embed') => {
+    setShowBrowser(false);
+    if (!url) return;
+    const newRoomId = 'sala-' + Math.floor(Math.random() * 10000);
+    enterRoom(newRoomId, url);
+  };
+
+  const enterRoom = (roomId: string, videoUrl: string = '') => {
+    if (!username.trim()) {
+      Alert.alert('Identifique-se', 'Digite seu nome para entrar.');
+      return;
+    }
+    router.push({
+      pathname: '/room/[id]',
+      params: { 
+        id: roomId, 
+        username,
+        videoUrl: encodeURIComponent(videoUrl) 
+      }
+    });
+  };
+
+  const showComingSoon = (service: string) => {
+    Alert.alert("Em Breve 🚧", `O suporte ao ${service} será adicionado nas próximas versões!`);
   };
 
   return (
-    <ScreenContainer className="p-4 bg-[#0F172A]">
-      <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}>
+    <SafeAreaView style={styles.container}>
+      {/* ScrollView principal */}
+      <ScrollView contentContainerStyle={styles.content}>
         
-        {/* Cabeçalho */}
-        <View className="items-center mb-10">
-          <View className="bg-[#6366F1]/20 p-6 rounded-full mb-4">
-            <Ionicons name="film-outline" size={64} color="#6366F1" />
-          </View>
-          <Text className="text-4xl font-bold text-white mb-2">CineSync</Text>
-          <Text className="text-gray-400 text-lg">Assista juntos, onde estiver.</Text>
+        <View style={styles.header}>
+          <Text style={styles.logo}>CineSync 🍿</Text>
+          <Text style={styles.subtitle}>O cinema é onde você estiver.</Text>
         </View>
 
-        {/* Cartão de Ações */}
-        <View className="bg-[#1E293B] p-6 rounded-3xl border border-[#334155] w-full">
-          
-          {/* Botão CRIAR SALA */}
-          <TouchableOpacity
-            onPress={() => router.push('/create-room')}
-            className="bg-[#6366F1] py-4 px-6 rounded-xl flex-row items-center justify-center mb-8"
-            activeOpacity={0.8}
-            style={styles.shadow} // Sombra suave
-          >
-            <Ionicons name="add-circle" size={28} color="white" style={{ marginRight: 12 }} />
-            <Text className="text-white font-bold text-xl">CRIAR NOVA SALA</Text>
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>Seu Apelido</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Ex: Capitão Pipoca"
+            placeholderTextColor="#666"
+            value={username}
+            onChangeText={setUsername}
+          />
+        </View>
+
+        {/* --- SEÇÃO DE CRIAR SALA --- */}
+        <Text style={styles.sectionTitle}>Criar Sala / Assistir</Text>
+        <View style={styles.grid}>
+          <TouchableOpacity style={[styles.card, { backgroundColor: '#FF0000' }]} onPress={() => openSource('https://youtube.com')}>
+            <Ionicons name="logo-youtube" size={32} color="white" />
+            <Text style={styles.cardText}>YouTube</Text>
           </TouchableOpacity>
 
-          {/* Divisor Visual */}
-          <View className="flex-row items-center mb-8">
-            <View className="flex-1 h-[1px] bg-[#334155]" />
-            <Text className="text-gray-500 mx-4 font-bold text-xs tracking-widest">OU ENTRE EM UMA SALA</Text>
-            <View className="flex-1 h-[1px] bg-[#334155]" />
-          </View>
+          <TouchableOpacity style={[styles.card, { backgroundColor: '#6366F1' }]} onPress={() => openSource('https://google.com')}>
+            <Ionicons name="globe-outline" size={32} color="white" />
+            <Text style={styles.cardText}>Internet</Text>
+          </TouchableOpacity>
 
-          {/* Área de ENTRAR */}
-          <View>
-            <Text className="text-gray-300 font-semibold mb-3 ml-1">Já tem um código?</Text>
-            <View className="flex-row gap-3">
-              <TextInput
-                placeholder="Ex: room_1234"
-                placeholderTextColor="#64748B"
-                value={joinId}
-                onChangeText={setJoinId}
-                autoCapitalize="none"
-                autoCorrect={false}
-                className="flex-1 bg-[#0F172A] text-white p-4 rounded-xl border border-[#334155] text-lg"
-              />
-              <TouchableOpacity
-                onPress={handleJoinRoom}
-                disabled={!joinId.trim()}
-                className={`w-16 items-center justify-center rounded-xl ${joinId.trim() ? 'bg-[#6366F1]' : 'bg-[#334155]'}`}
-              >
-                <Ionicons name="arrow-forward" size={28} color={joinId.trim() ? "white" : "#94A3B8"} />
-              </TouchableOpacity>
-            </View>
-          </View>
+          <TouchableOpacity style={[styles.card, styles.disabledCard]} onPress={() => showComingSoon('Netflix')}>
+            <Text style={[styles.cardText, { color: '#E50914', fontSize: 20, fontWeight: 'bold' }]}>N</Text>
+            <Text style={styles.cardSubText}>Em Breve</Text>
+          </TouchableOpacity>
 
+          <TouchableOpacity style={[styles.card, styles.disabledCard]} onPress={() => showComingSoon('Prime Video')}>
+            <Ionicons name="logo-amazon" size={32} color="#00A8E1" />
+            <Text style={styles.cardSubText}>Em Breve</Text>
+          </TouchableOpacity>
         </View>
+
+        {/* --- SEÇÃO DE SALAS ATIVAS --- */}
+        <View style={styles.roomsSection}>
+          <Text style={styles.sectionTitle}>Salas ao Vivo 🔴</Text>
+          
+          {activeRooms.length === 0 ? (
+            <View style={styles.noRooms}>
+              <Text style={styles.noRoomsText}>Nenhuma sala aberta no momento.</Text>
+              <Text style={styles.noRoomsSub}>Crie a primeira escolhendo um vídeo acima!</Text>
+            </View>
+          ) : (
+            activeRooms.map((room) => (
+              <TouchableOpacity key={room.id} style={styles.roomCard} onPress={() => enterRoom(room.id)}>
+                <View style={styles.roomInfo}>
+                  <Text style={styles.roomName}>{room.id}</Text>
+                  <View style={styles.roomBadges}>
+                    {room.hasVideo && (
+                      <View style={styles.badgeVideo}>
+                        <Ionicons name="play-circle" size={12} color="white" />
+                        <Text style={styles.badgeText}>Passando Filme</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+                <View style={styles.userCount}>
+                  <Ionicons name="people" size={16} color="#6366F1" />
+                  <Text style={styles.countText}>{room.userCount}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#444" />
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+
       </ScrollView>
-    </ScreenContainer>
+
+      {/* Modal do Navegador */}
+      <Modal visible={showBrowser} animationType="slide" onRequestClose={() => setShowBrowser(false)}>
+        <BrowserSelector 
+          initialUrl={targetUrl}
+          onVideoSelect={handleVideoSelected} 
+          onClose={() => setShowBrowser(false)} 
+        />
+      </Modal>
+    </SafeAreaView>
   );
 }
 
-// Estilos extras que o NativeWind às vezes precisa de ajuda
 const styles = StyleSheet.create({
-  shadow: {
-    shadowColor: "#6366F1",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 4.65,
-    elevation: 8,
-  }
+  container: { flex: 1, backgroundColor: '#0f0f0f' },
+  content: { padding: 20, paddingBottom: 50 },
+  header: { alignItems: 'center', marginBottom: 25, marginTop: 10 },
+  logo: { fontSize: 32, fontWeight: 'bold', color: '#6366F1' },
+  subtitle: { fontSize: 14, color: '#888', marginTop: 5 },
+  
+  inputGroup: { marginBottom: 25 },
+  label: { color: '#ccc', marginBottom: 8, marginLeft: 4, fontSize: 14 },
+  input: { backgroundColor: '#1E1E24', color: 'white', borderRadius: 12, padding: 14, fontSize: 16, borderWidth: 1, borderColor: '#333' },
+  
+  sectionTitle: { color: 'white', fontSize: 18, fontWeight: 'bold', marginBottom: 15, marginTop: 10 },
+  
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between', marginBottom: 30 },
+  card: { width: '48%', height: 90, borderRadius: 16, justifyContent: 'center', alignItems: 'center', elevation: 5 },
+  disabledCard: { backgroundColor: '#1E1E24', borderWidth: 1, borderColor: '#333', opacity: 0.6 },
+  cardText: { color: 'white', fontWeight: 'bold', marginTop: 5, fontSize: 14 },
+  cardSubText: { color: '#666', fontSize: 10, marginTop: 2 },
+
+  roomsSection: { marginTop: 10 },
+  noRooms: { alignItems: 'center', padding: 20, backgroundColor: '#1E1E24', borderRadius: 12, borderStyle: 'dashed', borderWidth: 1, borderColor: '#444' },
+  noRoomsText: { color: '#888', fontSize: 14, fontWeight: 'bold' },
+  noRoomsSub: { color: '#555', fontSize: 12, marginTop: 4 },
+
+  roomCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1E1E24', padding: 16, borderRadius: 12, marginBottom: 10, borderLeftWidth: 4, borderLeftColor: '#6366F1' },
+  roomInfo: { flex: 1 },
+  roomName: { color: 'white', fontSize: 16, fontWeight: 'bold' },
+  roomBadges: { flexDirection: 'row', marginTop: 4, gap: 5 },
+  badgeVideo: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#22c55e', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, gap: 4 },
+  badgeText: { color: 'white', fontSize: 10, fontWeight: 'bold' },
+  userCount: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(99, 102, 241, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, gap: 4, marginRight: 10 },
+  countText: { color: '#6366F1', fontWeight: 'bold', fontSize: 12 }
 });

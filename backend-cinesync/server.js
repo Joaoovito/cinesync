@@ -1,98 +1,155 @@
-const { Server } = require("socket.io");
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
 
-const io = new Server({
-  cors: { origin: "*" },
-});
+const app = express();
+app.use(cors());
 
-// MEMÓRIA DAS SALAS
-// Guarda: { 'sala-1': { isPlaying: false, lastVideoTime: 0, viewers: 1, ... } }
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+
 const rooms = {};
 
-console.log("📡 Servidor CineSync (Lista de Salas) rodando na porta 3000...");
-
-// Função para enviar lista atualizada para todos
 const broadcastRoomList = () => {
-  const roomList = Object.keys(rooms).map((key) => ({
-    id: key,
-    viewers: rooms[key].viewers || 0,
-    isPlaying: rooms[key].isPlaying
+  const roomList = Object.keys(rooms).map(roomId => ({
+    id: roomId,
+    userCount: rooms[roomId].users.length,
+    videoUrl: rooms[roomId].videoUrl,
+    hasVideo: !!rooms[roomId].videoUrl
   }));
-  io.emit("rooms_update", roomList);
+  roomList.sort((a, b) => b.userCount - a.userCount);
+  io.emit('active_rooms', roomList);
 };
 
-io.on("connection", (socket) => {
-  console.log(`Novo usuário: ${socket.id}`);
+// Função para calcular o tempo ATUAL do vídeo baseado no último carimbo
+const calculateCurrentTime = (room) => {
+  if (!room.isPlaying) return room.currentTime;
   
-  // 1. Envia a lista assim que conecta
+  const now = Date.now();
+  const timeElapsedInSeconds = (now - room.lastActionTime) / 1000;
+  return room.currentTime + timeElapsedInSeconds;
+};
+
+io.on('connection', (socket) => {
+  const userName = socket.handshake.query.displayName || 'Anônimo';
+
   broadcastRoomList();
 
-  // 2. Criar ou Entrar em Sala
-  socket.on("join_room", (roomId) => {
+  socket.on('join_room', ({ roomId, videoUrl }) => {
     socket.join(roomId);
 
-    // Se sala não existe, cria na memória
     if (!rooms[roomId]) {
-      rooms[roomId] = { 
-        isPlaying: false, 
-        lastVideoTime: 0, 
-        lastUpdateAt: Date.now(), 
-        viewers: 0 
+      rooms[roomId] = {
+        users: [],
+        videoUrl: videoUrl || '', 
+        isPlaying: false,
+        currentTime: 0,
+        lastActionTime: Date.now(), // 🔥 Carimbo de tempo
+        ownerId: socket.id
       };
-    }
-    
-    rooms[roomId].viewers += 1;
-    broadcastRoomList(); // Avisa a todos que tem gente nova na sala
-
-    // Sincronia Inteligente (Smart Sync)
-    const room = rooms[roomId];
-    let syncTime = room.lastVideoTime;
-    if (room.isPlaying) {
-      const timePassed = (Date.now() - room.lastUpdateAt) / 1000;
-      syncTime += timePassed;
+    } else if (videoUrl && videoUrl !== rooms[roomId].videoUrl) {
+      rooms[roomId].videoUrl = videoUrl;
+      rooms[roomId].currentTime = 0;
+      rooms[roomId].isPlaying = false;
+      io.to(roomId).emit('update_video_source', videoUrl);
     }
 
-    socket.emit("receive_action", {
-      type: room.isPlaying ? 'play' : 'pause',
-      value: syncTime,
-      forceSync: true
+    // Calcula o tempo real AGORA para quem está entrando
+    const realTime = calculateCurrentTime(rooms[roomId]);
+
+    const newUser = { id: socket.id, displayName: userName, isOwner: rooms[roomId].ownerId === socket.id };
+    rooms[roomId].users = rooms[roomId].users.filter(u => u.id !== socket.id);
+    rooms[roomId].users.push(newUser);
+
+    // Envia o estado já calculado!
+    io.to(socket.id).emit('room_data', {
+      users: rooms[roomId].users,
+      videoUrl: rooms[roomId].videoUrl,
+      ownerId: rooms[roomId].ownerId,
+      isPlaying: rooms[roomId].isPlaying,
+      currentTime: realTime // <--- O PULO DO GATO
     });
+
+    socket.to(roomId).emit('user_joined', newUser);
+    broadcastRoomList();
   });
 
-  // 3. Receber Ações (Play/Pause/Seek)
-  socket.on("send_action", (data) => {
-    if (!rooms[data.roomId]) return;
-
-    // Atualiza estado da sala
-    rooms[data.roomId] = {
-      ...rooms[data.roomId],
-      isPlaying: data.type === 'play' || (data.type === 'sync_time' && rooms[data.roomId].isPlaying),
-      lastVideoTime: data.value,
-      lastUpdateAt: Date.now()
-    };
-    
-    // Repassa ação para os outros
-    socket.to(data.roomId).emit("receive_action", data);
-    
-    // Se mudou Play/Pause, atualiza o status "LIVE" na lista da home
-    if (data.type === 'play' || data.type === 'pause') {
-      broadcastRoomList();
+  socket.on('change_video', ({ roomId, videoUrl }) => {
+    if (rooms[roomId]) {
+      rooms[roomId].videoUrl = videoUrl;
+      rooms[roomId].currentTime = 0;
+      rooms[roomId].isPlaying = false;
+      io.to(roomId).emit('update_video_source', videoUrl);
+      broadcastRoomList(); 
     }
   });
 
-  // 4. Usuário Saiu
-  socket.on("disconnecting", () => {
-    const userRooms = socket.rooms;
-    for (const room of userRooms) {
-      if (rooms[room]) {
-        rooms[room].viewers -= 1;
-        // Se a sala ficou vazia, deleta ela da lista
-        if (rooms[room].viewers <= 0) {
-          delete rooms[room];
+  socket.on('send_message', (data) => {
+    socket.to(data.roomId).emit('receive_message', data);
+  });
+
+  socket.on('video_control', (data) => {
+    const { roomId, action, currentTime } = data;
+    if (rooms[roomId]) {
+      // Atualiza o estado "base"
+      if (typeof currentTime === 'number') {
+        rooms[roomId].currentTime = currentTime;
+      }
+      
+      if (action === 'play') {
+        rooms[roomId].isPlaying = true;
+        rooms[roomId].lastActionTime = Date.now(); // 🔥 Marca a hora do Play
+      } 
+      else if (action === 'pause') {
+        // Quando pausa, calculamos onde parou de verdade
+        if (rooms[roomId].isPlaying) {
+           // Se estava tocando, atualiza o currentTime somando o que passou
+           rooms[roomId].currentTime = calculateCurrentTime(rooms[roomId]);
         }
+        rooms[roomId].isPlaying = false;
+        rooms[roomId].lastActionTime = Date.now();
+      }
+      else if (action === 'seek') {
+        // No seek, atualizamos a base e o timestamp
+        rooms[roomId].currentTime = currentTime;
+        rooms[roomId].lastActionTime = Date.now();
+      }
+
+      // Avisa a todos
+      const syncData = { 
+        isPlaying: rooms[roomId].isPlaying, 
+        currentTime: rooms[roomId].currentTime 
+      };
+      
+      // Manda para TODOS (inclusive quem enviou, para garantir consistência) se for sync crítico
+      // Mas geralmente socket.to(room) para os outros e o cliente local atualiza otimisticamente
+      socket.to(roomId).emit('sync_video_state', syncData);
+      
+      // Se for play/pause/seek, mandamos para o próprio remetente confirmar o tempo calculado pelo server?
+      // Por enquanto, vamos confiar que o Host mandou o tempo certo.
+    }
+  });
+
+  socket.on('disconnect', () => {
+    for (const roomId in rooms) {
+      rooms[roomId].users = rooms[roomId].users.filter(u => u.id !== socket.id);
+      if (rooms[roomId].users.length === 0) {
+        delete rooms[roomId];
+      } else {
+        if (rooms[roomId].ownerId === socket.id) {
+           rooms[roomId].ownerId = rooms[roomId].users[0].id;
+           rooms[roomId].users[0].isOwner = true;
+           io.to(roomId).emit('room_data', { ...rooms[roomId], currentTime: calculateCurrentTime(rooms[roomId]) });
+        }
+        io.to(roomId).emit('user_left', socket.id);
       }
     }
     broadcastRoomList();
   });
 });
 
-io.listen(3000);
+const PORT = 3000;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+});

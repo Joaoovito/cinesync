@@ -1,186 +1,278 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Clipboard, SafeAreaView, StatusBar } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { VideoPlayerSync } from '../../components/video-player-sync';
-import { io, Socket } from 'socket.io-client';
+import React, { useState, useRef, useEffect } from 'react';
+import { View, StyleSheet, Text, TouchableOpacity, Dimensions, ActivityIndicator, Pressable, Alert } from 'react-native';
+import { WebView } from 'react-native-webview';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 
-// ⚠️ SEU IP
-const SOCKET_URL = 'http://192.168.0.5:3000'; 
+interface VideoPlayerSyncProps {
+  videoId: string;
+  isPlaying: boolean;       
+  onPlayRequest: () => void;
+  isOwner: boolean;
+  onTimeUpdate?: (currentTime: number) => void;
+  onSeekRequest?: (time: number) => void;
+  onReady?: () => void;
+  remoteTime?: number;
+}
 
-export default function RoomScreen() {
-  const router = useRouter();
-  const { id, isHost, videoId } = useLocalSearchParams();
-  const isOwner = isHost === 'true';
-  const currentVideoId = (videoId as string) || "dQw4w9WgXcQ";
+const formatTime = (seconds: number) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+};
 
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [targetTime, setTargetTime] = useState(0); 
+export function VideoPlayerSync({ 
+  videoId, 
+  isPlaying, 
+  onPlayRequest,
+  isOwner,
+  onTimeUpdate,
+  onSeekRequest,
+  onReady,
+  remoteTime = 0
+}: VideoPlayerSyncProps) {
+  const webViewRef = useRef<WebView>(null);
+  const [hasStarted, setHasStarted] = useState(false);
+  const [showControls, setShowControls] = useState(false);
+  const [localIsPlaying, setLocalIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [interactMode, setInteractMode] = useState(false);
   
-  // --- CORREÇÃO: Estado para saber se o player já carregou ---
-  const [isPlayerReady, setIsPlayerReady] = useState(false);
-  const pendingActionRef = useRef<{ type: string, value: number } | null>(null);
+  const isYouTube = videoId && videoId.length === 11 && !videoId.includes('/') && !videoId.includes('.');
 
-  const socketRef = useRef<Socket | null>(null);
-  const currentHostTimeRef = useRef(0);
-  const lastHeartbeatRef = useRef(0);
+  const filePlayerHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <style>body { margin: 0; background-color: black; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; } video, iframe { width: 100%; height: 100%; border: 0; object-fit: contain; }</style>
+      </head>
+      <body>
+        ${videoId.includes('.mp4') || videoId.includes('.m3u8') ? 
+          `<video id="player" src="${videoId}" playsinline webkit-playsinline autoplay controlsList="nodownload"></video>` : 
+          `<iframe id="player" src="${videoId}" allowfullscreen allow="autoplay; encrypted-media"></iframe>`
+        }
+        <script>
+          var player = document.getElementById('player');
+          var isVideo = player.tagName === 'VIDEO';
+          if(isVideo) {
+            player.addEventListener('loadedmetadata', function() { window.ReactNativeWebView.postMessage(JSON.stringify({type: 'ready', duration: player.duration})); });
+            setInterval(function(){ window.ReactNativeWebView.postMessage(JSON.stringify({type: 'status', currentTime: player.currentTime, duration: player.duration || 0, paused: player.paused})); }, 500);
+          } else {
+            window.ReactNativeWebView.postMessage(JSON.stringify({type: 'ready', duration: 0}));
+          }
+          window.control = {
+            play: function() { if(isVideo) player.play(); },
+            pause: function() { if(isVideo) player.pause(); },
+            seek: function(time) { if(isVideo && isFinite(player.duration)) player.currentTime = time; }
+          };
+        </script>
+      </body>
+    </html>
+  `;
 
+  const youtubePlayerHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <style>html, body { height: 100%; width: 100%; margin: 0; padding: 0; background-color: black; overflow: hidden; } #player { width: 100% !important; height: 100% !important; }</style>
+      </head>
+      <body>
+        <div id="player"></div>
+        <script>
+          var tag = document.createElement('script'); tag.src = "https://www.youtube.com/iframe_api";
+          var firstScriptTag = document.getElementsByTagName('script')[0]; firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+          var player;
+          function onYouTubeIframeAPIReady() {
+            player = new YT.Player('player', {
+              height: '100%', width: '100%', videoId: '${videoId}',
+              playerVars: { 'playsinline': 1, 'controls': 0, 'rel': 0, 'fs': 0, 'autoplay': 1, 'modestbranding': 1 },
+              events: { 'onReady': onPlayerReady, 'onStateChange': onPlayerStateChange }
+            });
+          }
+          function onPlayerReady(event) { window.ReactNativeWebView.postMessage(JSON.stringify({type: 'ready'})); event.target.playVideo(); }
+          function onPlayerStateChange(event) { 
+             var st = event.data;
+             var playing = st === 1;
+             window.ReactNativeWebView.postMessage(JSON.stringify({type: 'status', currentTime: player.getCurrentTime(), duration: player.getDuration(), paused: !playing})); 
+          }
+          setInterval(function(){ if(player && player.getCurrentTime) window.ReactNativeWebView.postMessage(JSON.stringify({type: 'status', currentTime: player.getCurrentTime(), duration: player.getDuration()})); }, 500);
+          window.control = { play: function() { player.playVideo(); }, pause: function() { player.pauseVideo(); }, seek: function(time) { player.seekTo(time, true); } };
+        </script>
+      </body>
+    </html>
+  `;
+
+  const inject = (script: string) => webViewRef.current?.injectJavaScript(script);
+
+  // Efeito 1: Obedece ao Servidor
   useEffect(() => {
-    socketRef.current = io(SOCKET_URL);
-    socketRef.current.emit('join_room', id);
+    if (interactMode) return;
 
-    socketRef.current.on('receive_action', (data) => {
-      console.log(`📥 Recebido: ${data.type} | Valor: ${data.value}`);
-
-      // SE O PLAYER AINDA NÃO ESTIVER PRONTO, GUARDA NA FILA
-      if (!isPlayerReady && data.forceSync) {
-        console.log("⏳ Player carregando... Ação guardada para depois.");
-        pendingActionRef.current = data;
-        return;
-      }
-
-      processAction(data);
-    });
-
-    return () => {
-      socketRef.current?.disconnect();
-    };
-  }, [id, isPlayerReady]); // Adicionei isPlayerReady nas dependências
-
-  // Função separada para processar ações (usada na chegada e no desbloqueio)
-  const processAction = (data: any) => {
-    if (data.type === 'play') {
-      setIsPlaying(true);
-      if (Math.abs(currentHostTimeRef.current - data.value) > 1.5) {
-        setTargetTime(data.value);
-      }
-    }
-    
-    if (data.type === 'pause') {
-      setIsPlaying(false);
-      setTargetTime(data.value);
-    }
-
-    if (data.type === 'seek' || data.type === 'sync_time') {
-      setTargetTime(data.value);
-    }
-  };
-
-  // --- O PLAYER NOS AVISA QUANDO ESTÁ PRONTO ---
-  const handlePlayerReady = () => {
-    console.log("✅ Player Pronto! Verificando ações pendentes...");
-    setIsPlayerReady(true);
-    
-    // Se tiver algo guardado (o estado inicial da sala), executa agora
-    if (pendingActionRef.current) {
-      console.log("🚀 Executando ação pendente:", pendingActionRef.current);
-      const action = pendingActionRef.current;
-      
-      // Força o estado inicial
-      setIsPlaying(action.type === 'play');
-      setTargetTime(action.value);
-      
-      pendingActionRef.current = null; // Limpa a fila
-    }
-  };
-
-  const handleTimeUpdate = (currentTime: number) => {
-    currentHostTimeRef.current = currentTime; 
-
-    if (isOwner && isPlaying) {
-      const now = Date.now();
-      if (now - lastHeartbeatRef.current > 5000) {
-        socketRef.current?.emit('send_action', {
-          roomId: id,
-          type: 'sync_time', 
-          value: currentTime
-        });
-        lastHeartbeatRef.current = now;
-      }
-    }
-  };
-
-  const handlePlayRequest = () => {
-    if (isOwner) {
-      const newState = !isPlaying;
-      setIsPlaying(newState);
-      socketRef.current?.emit('send_action', {
-        roomId: id,
-        type: newState ? 'play' : 'pause',
-        value: currentHostTimeRef.current 
-      });
-      lastHeartbeatRef.current = Date.now();
+    if (isPlaying) {
+      inject(`if(window.control) window.control.play(); true;`);
     } else {
-      alert('Apenas o Host controla o vídeo!');
+      if (!isOwner && remoteTime > 0) {
+        // Pausa alinhada
+        inject(`if(window.control) { window.control.seek(${remoteTime}); window.control.pause(); } true;`);
+      } else {
+        inject(`if(window.control) window.control.pause(); true;`);
+      }
     }
+    
+    // Se recebermos um tempo específico (seja por seek do host, ou entrada na sala)
+    // O useEffect dispara porque remoteTime mudou
+    if (remoteTime > 0 && !isOwner) {
+      // Seek silencioso
+       inject(`if(window.control) { window.control.seek(${remoteTime}); } true;`);
+    }
+
+  }, [isPlaying, interactMode, isOwner, remoteTime]);
+
+  const handleMessage = (event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'ready') { if (onReady) onReady(); }
+      if (data.type === 'status') {
+        setCurrentTime(data.currentTime);
+        setDuration(data.duration);
+        if (data.paused !== undefined) setLocalIsPlaying(!data.paused);
+        if (!hasStarted && data.currentTime > 0) setHasStarted(true);
+        if (isOwner && onTimeUpdate) onTimeUpdate(data.currentTime);
+      }
+    } catch (e) {}
   };
 
-  const handleSeekRequest = (newTime: number) => {
+  const handleSeek = (evt: any) => {
+    if (!isOwner || duration === 0) return;
+    const width = evt.nativeEvent.locationX;
+    const seekTime = duration * (width / (Dimensions.get('window').width - 32));
+    inject(`if(window.control) window.control.seek(${seekTime}); true;`);
+    setCurrentTime(seekTime);
+    if (onSeekRequest) onSeekRequest(seekTime);
+  };
+
+  const handleTogglePlay = () => {
     if (isOwner) {
-      currentHostTimeRef.current = newTime;
-      socketRef.current?.emit('send_action', {
-        roomId: id,
-        type: 'seek',
-        value: newTime
-      });
-      lastHeartbeatRef.current = Date.now();
+      onPlayRequest();
+    } else {
+      if (localIsPlaying) {
+        inject(`if(window.control) window.control.pause(); true;`);
+        setLocalIsPlaying(false);
+      } else {
+        if (!isPlaying) {
+          Alert.alert("Aguarde", "O Host pausou o vídeo.");
+          return;
+        }
+
+        // Play Local + Sync
+        // Usa o remoteTime que o servidor mandou e calculou
+        if (remoteTime > 0) {
+           console.log("▶ Espectador dando Play. Pulando para server time:", remoteTime);
+           inject(`if(window.control) { window.control.seek(${remoteTime}); window.control.play(); } true;`);
+        } else {
+           inject(`if(window.control) window.control.play(); true;`);
+        }
+        setLocalIsPlaying(true);
+      }
     }
   };
 
-  const copyCode = () => { Clipboard.setString(id as string); alert('Copiado!'); };
-  const leaveRoom = () => { socketRef.current?.disconnect(); router.replace('/'); };
+  const exitInteractMode = () => {
+    setInteractMode(false);
+    setShowControls(true);
+    if (!isOwner && remoteTime > 0) {
+      inject(`if(window.control) { window.control.seek(${remoteTime}); window.control.play(); } true;`);
+    }
+  };
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
-      <SafeAreaView style={{ flex: 1 }}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={leaveRoom} style={styles.backButton}><Ionicons name="arrow-back" size={24} color="white" /></TouchableOpacity>
-          <View style={styles.headerInfo}>
-            <Text style={styles.roomTitle}>Sala: {id}</Text>
-            <View style={[styles.roleBadge, { backgroundColor: isOwner ? '#4ade80' : '#facc15' }]}>
-              <Text style={styles.roleText}>{isOwner ? 'HOST' : 'ESPECTADOR'}</Text>
-            </View>
-          </View>
-          <TouchableOpacity onPress={copyCode} style={styles.copyButton}><Ionicons name="copy-outline" size={20} color="white" /></TouchableOpacity>
+      <View style={styles.videoWrapper}>
+        <WebView
+          key={videoId} 
+          ref={webViewRef}
+          originWhitelist={['*']}
+          source={{ html: isYouTube ? youtubePlayerHTML : filePlayerHTML, baseUrl: "https://google.com" }} 
+          onMessage={handleMessage}
+          javaScriptEnabled={true} 
+          domStorageEnabled={true} 
+          allowsInlineMediaPlayback={true} 
+          mediaPlaybackRequiresUserAction={false}
+          userAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
+          style={{ backgroundColor: 'black' }}
+        />
+      </View>
+      
+      {interactMode ? (
+        <View style={styles.interactOverlayContainer} pointerEvents="box-none">
+          <TouchableOpacity style={styles.exitInteractBtn} onPress={exitInteractMode}>
+            <Ionicons name="checkmark-circle" size={24} color="black" />
+            <Text style={styles.interactText}>Voltar e Sincronizar</Text>
+          </TouchableOpacity>
         </View>
+      ) : (
+        hasStarted && (
+          <Pressable style={styles.overlayContainer} onPress={() => setShowControls(!showControls)}>
+            {showControls && (
+              <View style={styles.controlsUI}>
+                
+                <View style={styles.topBar}>
+                   <TouchableOpacity style={styles.interactButton} onPress={() => { setInteractMode(true); setShowControls(false); }}>
+                      <Ionicons name="finger-print" size={20} color="white" />
+                      <Text style={styles.btnText}>Pular Anúncio / Mexer</Text>
+                   </TouchableOpacity>
+                </View>
 
-        <View style={styles.playerWrapper}>
-          <VideoPlayerSync 
-            videoId={currentVideoId}
-            isPlaying={isPlaying} 
-            onPlayRequest={handlePlayRequest} 
-            isOwner={isOwner}
-            onTimeUpdate={handleTimeUpdate} 
-            onSeekRequest={handleSeekRequest}
-            remoteTime={targetTime}
-            // Passamos a função para o componente nos avisar
-            onReady={handlePlayerReady} 
-          />
-        </View>
+                <View style={styles.centerControls}>
+                  <TouchableOpacity 
+                    onPress={handleTogglePlay} 
+                    style={[styles.playButton, (!isOwner && !localIsPlaying && !isPlaying) && styles.disabledButton]}
+                  >
+                    <Ionicons 
+                      name={(isOwner ? isPlaying : localIsPlaying) ? "pause" : "play"} 
+                      size={40} 
+                      color="white" 
+                      style={{marginLeft: (isOwner ? isPlaying : localIsPlaying) ? 0 : 4}}
+                    />
+                  </TouchableOpacity>
+                </View>
 
-        <View style={styles.contentArea}>
-           <Text style={styles.statusText}>{socketRef.current?.connected ? '🟢 Conectado' : '🔴 ...'}</Text>
-           <Text style={styles.placeholderText}>
-             {isOwner ? "Host (Controle Total)" : "Sincronizando..."}
-           </Text>
-        </View>
-      </SafeAreaView>
+                <View style={styles.bottomBar}>
+                  <Text style={styles.timeText}>{formatTime(currentTime)} / {formatTime(duration)}</Text>
+                  <Pressable onPress={isOwner ? handleSeek : undefined} style={styles.progressBarArea}>
+                    <View style={styles.progressBarBg}>
+                      <View style={[styles.progressBarFill, { width: `${(currentTime / (duration || 1)) * 100}%` }]} />
+                    </View>
+                  </Pressable>
+                </View>
+              </View>
+            )}
+          </Pressable>
+        )
+      )}
     </View>
   );
 }
-
+// ... Styles
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f0f12' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#222', marginTop: 30 },
-  backButton: { padding: 8 },
-  headerInfo: { alignItems: 'center' },
-  roomTitle: { color: 'white', fontSize: 18, fontWeight: 'bold' },
-  roleBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginTop: 4 },
-  roleText: { fontSize: 10, fontWeight: 'bold', color: 'black' },
-  copyButton: { padding: 8, backgroundColor: '#333', borderRadius: 8 },
-  playerWrapper: { width: '100%', aspectRatio: 16/9, backgroundColor: 'black', marginTop: 10 },
-  contentArea: { flex: 1, padding: 20, alignItems: 'center' },
-  statusText: { color: '#4ade80', fontSize: 12, marginBottom: 10 },
-  placeholderText: { color: '#888', fontSize: 14 }
+  container: { width: '100%', height: 240, backgroundColor: 'black', borderRadius: 12, overflow: 'hidden' },
+  videoWrapper: { flex: 1, backgroundColor: 'black' },
+  overlayContainer: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
+  controlsUI: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', padding: 12, backgroundColor: 'rgba(0,0,0,0.4)' },
+  topBar: { alignItems: 'flex-end' },
+  interactButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.2)', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 20, gap: 5 },
+  btnText: { color: 'white', fontSize: 12, fontWeight: 'bold' },
+  centerControls: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  playButton: { width: 60, height: 60, borderRadius: 30, backgroundColor: 'rgba(99, 102, 241, 0.9)', justifyContent: 'center', alignItems: 'center', elevation: 5 },
+  disabledButton: { opacity: 0.5, backgroundColor: 'rgba(50, 50, 50, 0.9)' },
+  bottomBar: { width: '100%', paddingBottom: 4 },
+  timeText: { color: 'white', fontSize: 12, fontWeight: 'bold', marginBottom: 8 },
+  progressBarArea: { height: 20, justifyContent: 'center' },
+  progressBarBg: { height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, width: '100%' },
+  progressBarFill: { height: '100%', backgroundColor: '#6366F1' },
+  interactOverlayContainer: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 20, zIndex: 20 },
+  exitInteractBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#22C55E', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 30, gap: 8, elevation: 5 },
+  interactText: { color: 'black', fontWeight: 'bold', fontSize: 14 }
 });
