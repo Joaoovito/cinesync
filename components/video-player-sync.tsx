@@ -109,25 +109,28 @@ export function VideoPlayerSync({
   const inject = (script: string) => webViewRef.current?.injectJavaScript(script);
 
   useEffect(() => {
-    if (interactMode) return;
+    if (interactMode || isOwner) return; // Dono nunca é sincronizado externamente
 
     if (isPlaying) {
       inject(`if(window.control) window.control.play(); true;`);
     } else {
-      // Pause e alinha se tiver tempo remoto
-      if (!isOwner && remoteTime > 0) {
-        inject(`if(window.control) { window.control.seek(${remoteTime}); window.control.pause(); } true;`);
-      } else {
-        inject(`if(window.control) window.control.pause(); true;`);
-      }
+      // Pause alinhado: se o host pausou, eu pulo exatamente para onde ele parou
+      inject(`if(window.control) { window.control.seek(${remoteTime}); window.control.pause(); } true;`);
+    }
+    
+    // 🔥 SINCRONIA INTELIGENTE COM TOLERÂNCIA
+    // Só faz o "seek" se o espectador estiver mais de 3 segundos atrasado ou adiantado.
+    // Isso evita pulos constantes devido ao lag da rede.
+    if (remoteTime > 0) {
+       const timeDiff = Math.abs(currentTime - remoteTime);
+       
+       if (timeDiff > 3) {
+         console.log("🔄 Sincronizando: Diferença de", timeDiff, "segundos detectada.");
+         inject(`if(window.control) { window.control.seek(${remoteTime}); } true;`);
+       }
     }
 
-    // Se remoteTime mudar (recebeu do servidor), busca
-    if (remoteTime > 0 && !isOwner) {
-       inject(`if(window.control) { window.control.seek(${remoteTime}); } true;`);
-    }
-
-  }, [isPlaying, interactMode, isOwner, remoteTime]);
+  }, [isPlaying, interactMode, isOwner, remoteTime, currentTime]);
 
   const handleMessage = (event: any) => {
     try {

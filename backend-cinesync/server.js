@@ -31,6 +31,20 @@ const calculateCurrentTime = (room) => {
   return room.currentTime + timeElapsedInSeconds;
 };
 
+setInterval(() => {
+  for (const roomId in rooms) {
+    const room = rooms[roomId];
+    if (room.isPlaying && room.users.length > 0) {
+      const realTime = calculateCurrentTime(room);
+      // Envia apenas o tempo atualizado para a sala
+      io.to(roomId).emit('sync_video_state', { 
+        isPlaying: true, 
+        currentTime: realTime 
+      });
+    }
+  }
+}, 5000); // 5 segundos é um equilíbrio perfeito entre economia e precisão
+
 io.on('connection', (socket) => {
   const userName = socket.handshake.query.displayName || 'Anônimo';
 
