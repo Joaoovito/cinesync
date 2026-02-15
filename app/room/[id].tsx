@@ -8,9 +8,6 @@ import { BrowserSelector } from '../../components/browser-selector';
 
 const SOCKET_URL = 'http://192.168.0.5:3000'; 
 
-interface User { id: string; displayName: string; isOwner: boolean; }
-interface Message { id: string; sender: string; text: string; system?: boolean; }
-
 export default function RoomScreen() {
   const params = useLocalSearchParams();
   const router = useRouter();
@@ -18,17 +15,9 @@ export default function RoomScreen() {
   const roomId = Array.isArray(params.id) ? params.id[0] : params.id;
   const username = Array.isArray(params.username) ? params.username[0] : params.username;
   
-  let initialVideoUrl = '';
-  if (params.videoUrl) {
-    const rawUrl = Array.isArray(params.videoUrl) ? params.videoUrl[0] : params.videoUrl;
-    try { initialVideoUrl = decodeURIComponent(rawUrl); } catch (e) { initialVideoUrl = rawUrl; }
-  }
-
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [currentVideo, setCurrentVideo] = useState(initialVideoUrl);
+  const [users, setUsers] = useState<any[]>([]);
+  const [currentVideo, setCurrentVideo] = useState(decodeURIComponent(params.videoUrl as string || ''));
   const [isPlaying, setIsPlaying] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
   const [remoteTime, setRemoteTime] = useState(0);
@@ -36,8 +25,11 @@ export default function RoomScreen() {
   const [isLoading, setIsLoading] = useState(true);
 
   const currentTimeRef = useRef(0);
-  const videoUrlRef = useRef(initialVideoUrl);
-
+  const handleIndividualSync = () => {
+  if (socket && socket.connected) {
+    socket.emit('request_individual_sync', { roomId });
+    }
+  };
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
       query: { displayName: username || 'Visitante' },
@@ -46,18 +38,16 @@ export default function RoomScreen() {
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
-      newSocket.emit('join_room', { roomId: roomId, videoUrl: videoUrlRef.current });
+      newSocket.emit('join_room', { roomId, videoUrl: currentVideo });
     });
 
     newSocket.on('room_data', (data: any) => {
       setUsers(data.users || []);
-      if (data.videoUrl) {
-        setCurrentVideo(data.videoUrl);
-        videoUrlRef.current = data.videoUrl;
-      }
+      if (data.videoUrl) setCurrentVideo(data.videoUrl);
       setIsPlaying(data.isPlaying);
       setRemoteTime(data.currentTime);
-      const me = data.users?.find((u: User) => u.id === newSocket.id);
+      currentTimeRef.current = data.currentTime;
+      const me = data.users?.find((u: any) => u.id === newSocket.id);
       setIsOwner(me?.isOwner || false);
       setIsLoading(false);
     });
@@ -84,6 +74,12 @@ export default function RoomScreen() {
     }
   };
 
+  const handleSeekRequest = (time: number) => {
+    if (isOwner && socket) {
+      socket.emit('video_control', { roomId, action: 'seek', currentTime: time });
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -92,22 +88,22 @@ export default function RoomScreen() {
         <TouchableOpacity onPress={() => setShowBrowser(true)}><Ionicons name="search" size={24} color="#6366F1" /></TouchableOpacity>
       </View>
       <View style={styles.videoContainer}>
-        {isLoading ? <ActivityIndicator size="large" /> : (
+        {isLoading ? <ActivityIndicator size="large" color="#6366F1" /> : (
           <VideoPlayerSync 
             videoId={currentVideo}
             isPlaying={isPlaying}
             isOwner={isOwner}
             onPlayRequest={handlePlayRequest}
+            onSeekRequest={handleSeekRequest}
             onTimeUpdate={(t) => currentTimeRef.current = t}
             remoteTime={remoteTime}
+            onSyncRequest={handleIndividualSync}
           />
         )}
       </View>
-      <FlatList 
-        data={messages} 
-        renderItem={({item}) => <Text style={{color: 'white'}}>{item.text}</Text>}
-      />
-      <Modal visible={showBrowser}><BrowserSelector onVideoSelect={(url) => {setCurrentVideo(url); setShowBrowser(false)}} onClose={() => setShowBrowser(false)} /></Modal>
+      <Modal visible={showBrowser} animationType="slide">
+        <BrowserSelector onVideoSelect={(url) => {setCurrentVideo(url); setShowBrowser(false)}} onClose={() => setShowBrowser(false)} />
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -115,6 +111,6 @@ export default function RoomScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f0f0f' },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 15 },
-  title: { color: 'white', fontWeight: 'bold' },
+  title: { color: 'white', fontWeight: 'bold', fontSize: 16 },
   videoContainer: { height: 240, backgroundColor: 'black', justifyContent: 'center' }
 });
