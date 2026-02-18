@@ -11,6 +11,13 @@ const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } 
 
 const rooms = {};
 
+const calculateCurrentTime = (room) => {
+  if (!room.isPlaying) return room.currentTime;
+  const now = Date.now();
+  const timeElapsedInSeconds = (now - room.lastActionTime) / 1000;
+  return room.currentTime + timeElapsedInSeconds;
+};
+
 const broadcastRoomList = () => {
   const roomList = Object.keys(rooms).map(roomId => ({
     id: roomId,
@@ -22,27 +29,9 @@ const broadcastRoomList = () => {
   io.emit('active_rooms', roomList);
 };
 
-const calculateCurrentTime = (room) => {
-  if (!room.isPlaying) return room.currentTime;
-  const now = Date.now();
-  const timeElapsedInSeconds = (now - room.lastActionTime) / 1000;
-  return room.currentTime + timeElapsedInSeconds;
-};
-
-
 io.on('connection', (socket) => {
-  const userName = socket.handshake.query.displayName || 'Anónimo';
-  broadcastRoomList();
-  // 🔥 NOVO: Atende pedidos de sincronia individual
-socket.on('request_individual_sync', ({ roomId }) => {
-  if (rooms[roomId]) {
-    const realTime = calculateCurrentTime(rooms[roomId]);
-    socket.emit('sync_video_state', { 
-      isPlaying: rooms[roomId].isPlaying, 
-      currentTime: realTime 
-    });
-  }
-});
+  const userName = socket.handshake.query.displayName || 'Anônimo';
+
   socket.on('join_room', ({ roomId, videoUrl }) => {
     socket.join(roomId);
     if (!rooms[roomId]) {
@@ -71,27 +60,37 @@ socket.on('request_individual_sync', ({ roomId }) => {
     broadcastRoomList();
   });
 
+  // 🔥 NOVO: Atende pedidos de sincronia individuais (Estratégia Econômica)
+  socket.on('request_individual_sync', ({ roomId }) => {
+    if (rooms[roomId]) {
+      const realTime = calculateCurrentTime(rooms[roomId]);
+      socket.emit('sync_video_state', { 
+        isPlaying: rooms[roomId].isPlaying, 
+        currentTime: realTime 
+      });
+    }
+  });
+
   socket.on('video_control', (data) => {
     const { roomId, action, currentTime } = data;
-    // Substitua o início do bloco por:
-if (rooms[roomId]) {
-  if (typeof currentTime === 'number') {
-    rooms[roomId].currentTime = currentTime;
-  } else {
-    rooms[roomId].currentTime = calculateCurrentTime(rooms[roomId]);
-  }
-  // ... resto da lógica de play/pause
+    if (rooms[roomId]) {
+      // Prioridade ao tempo enviado pelo Host para evitar resets
+      if (typeof currentTime === 'number') {
+        rooms[roomId].currentTime = currentTime;
+      } else {
+        rooms[roomId].currentTime = calculateCurrentTime(rooms[roomId]);
+      }
+
       if (action === 'play') {
         rooms[roomId].isPlaying = true;
         rooms[roomId].lastActionTime = Date.now();
       } else if (action === 'pause') {
-        if (rooms[roomId].isPlaying) rooms[roomId].currentTime = calculateCurrentTime(rooms[roomId]);
         rooms[roomId].isPlaying = false;
         rooms[roomId].lastActionTime = Date.now();
       } else if (action === 'seek') {
-        rooms[roomId].currentTime = currentTime;
         rooms[roomId].lastActionTime = Date.now();
       }
+
       socket.to(roomId).emit('sync_video_state', { 
         isPlaying: rooms[roomId].isPlaying, 
         currentTime: rooms[roomId].currentTime 
@@ -114,5 +113,4 @@ if (rooms[roomId]) {
   });
 });
 
-const PORT = 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor na porta ${PORT}`));
+server.listen(3000, '0.0.0.0', () => console.log(`🚀 Servidor CineSync na porta 3000`));

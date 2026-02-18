@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput, SafeAreaView, KeyboardAvoidingView, Platform, ActivityIndicator, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { io, Socket } from 'socket.io-client';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,7 +16,6 @@ export default function RoomScreen() {
   const username = Array.isArray(params.username) ? params.username[0] : params.username;
   
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [users, setUsers] = useState<any[]>([]);
   const [currentVideo, setCurrentVideo] = useState(decodeURIComponent(params.videoUrl as string || ''));
   const [isPlaying, setIsPlaying] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
@@ -25,11 +24,7 @@ export default function RoomScreen() {
   const [isLoading, setIsLoading] = useState(true);
 
   const currentTimeRef = useRef(0);
-  const handleIndividualSync = () => {
-  if (socket && socket.connected) {
-    socket.emit('request_individual_sync', { roomId });
-    }
-  };
+
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
       query: { displayName: username || 'Visitante' },
@@ -42,11 +37,11 @@ export default function RoomScreen() {
     });
 
     newSocket.on('room_data', (data: any) => {
-      setUsers(data.users || []);
       if (data.videoUrl) setCurrentVideo(data.videoUrl);
       setIsPlaying(data.isPlaying);
       setRemoteTime(data.currentTime);
-      currentTimeRef.current = data.currentTime;
+      // 🔥 Inicializa a referência para evitar o reset para 0:00
+      currentTimeRef.current = data.currentTime; 
       const me = data.users?.find((u: any) => u.id === newSocket.id);
       setIsOwner(me?.isOwner || false);
       setIsLoading(false);
@@ -80,6 +75,12 @@ export default function RoomScreen() {
     }
   };
 
+  const handleIndividualSync = () => {
+    if (socket && socket.connected) {
+      socket.emit('request_individual_sync', { roomId });
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -95,9 +96,9 @@ export default function RoomScreen() {
             isOwner={isOwner}
             onPlayRequest={handlePlayRequest}
             onSeekRequest={handleSeekRequest}
+            onSyncRequest={handleIndividualSync}
             onTimeUpdate={(t) => currentTimeRef.current = t}
             remoteTime={remoteTime}
-            onSyncRequest={handleIndividualSync}
           />
         )}
       </View>

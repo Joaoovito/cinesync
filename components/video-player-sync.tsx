@@ -10,8 +10,9 @@ interface VideoPlayerSyncProps {
   isOwner: boolean;
   onTimeUpdate?: (currentTime: number) => void;
   onSeekRequest?: (time: number) => void;
+  onSyncRequest?: () => void; // 🔥 Prop adicionada
+  onReady?: () => void;
   remoteTime?: number;
-  onSyncRequest?: () => void;
 }
 
 const formatTime = (seconds: number) => {
@@ -20,7 +21,17 @@ const formatTime = (seconds: number) => {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 };
 
-export function VideoPlayerSync({ videoId, isPlaying, onPlayRequest, isOwner, onTimeUpdate,onSyncRequest, onSeekRequest, remoteTime = 0 }: VideoPlayerSyncProps) {
+export function VideoPlayerSync({ 
+  videoId, 
+  isPlaying, 
+  onPlayRequest, 
+  isOwner, 
+  onTimeUpdate, 
+  onSeekRequest, 
+  onSyncRequest, 
+  onReady, 
+  remoteTime = 0 
+}: VideoPlayerSyncProps) {
   const webViewRef = useRef<WebView>(null);
   const [hasStarted, setHasStarted] = useState(false);
   const [showControls, setShowControls] = useState(false);
@@ -52,29 +63,26 @@ export function VideoPlayerSync({ videoId, isPlaying, onPlayRequest, isOwner, on
 
   const inject = (s: string) => webViewRef.current?.injectJavaScript(s);
 
-  // Reação ao Estado da Sala
   useEffect(() => {
+    if (!hasStarted) return;
     if (isPlaying) inject(`if(window.control)window.control.play();true;`);
     else {
-  if (!isOwner && remoteTime > 0) {
-    // Força o espectador a pular para o tempo da pausa e parar
-    inject(`if(window.control) { window.control.seek(${remoteTime}); window.control.pause(); } true;`);
-  } else {
-    inject(`if(window.control) window.control.pause(); true;`);
-  }
-}
-  })
+      if (!isOwner && remoteTime > 0) {
+        inject(`if(window.control){window.control.seek(${remoteTime});window.control.pause();}true;`);
+      } else inject(`if(window.control)window.control.pause();true;`);
+    }
+  }, [isPlaying, hasStarted, isOwner]);
 
-  // Sincronia com Margem de Erro
   useEffect(() => {
-    const diff = Math.abs(currentTime - remoteTime);
+    if (!hasStarted || isOwner || remoteTime === 0) return;
+    const diff = Math.abs(currentTime - remoteTime); // 🔥 Variável declarada
     if (diff > 3) inject(`if(window.control)window.control.seek(${remoteTime});true;`);
   }, [remoteTime, hasStarted, isOwner]);
 
   const handleMessage = (e: any) => {
     try {
       const d = JSON.parse(e.nativeEvent.data);
-      if (d.type === 'ready') setHasStarted(true);
+      if (d.type === 'ready') { setHasStarted(true); onReady?.(); }
       if (d.type === 'status') {
         setCurrentTime(d.currentTime);
         setDuration(d.duration);
@@ -85,31 +93,21 @@ export function VideoPlayerSync({ videoId, isPlaying, onPlayRequest, isOwner, on
   };
 
   const handleTogglePlay = () => {
-  if (isOwner) {
-    onPlayRequest();
-  } else {
-    if (localIsPlaying) {
-      inject(`window.control.pause();`);
-      setLocalIsPlaying(false);
-    } else {
+    if (isOwner) onPlayRequest();
+    else if (localIsPlaying) { inject(`window.control.pause();`); setLocalIsPlaying(false); }
+    else {
       if (!isPlaying) return Alert.alert("Aguarde", "O Host pausou o vídeo.");
-      
-      // 🔥 SOLICITA O TEMPO AO SERVIDOR ANTES DE DAR PLAY
-      onSyncRequest?.(); 
-      
-      // O play acontecerá automaticamente quando o remoteTime atualizar via prop
+      onSyncRequest?.(); // 🔥 Solicita o tempo ao servidor
       setLocalIsPlaying(true);
     }
-  }
-};
+  };
 
   const handleSliderSeek = (evt: any) => {
     if (!isOwner || duration === 0) return;
-    const width = evt.nativeEvent.locationX;
-    const sliderWidth = Dimensions.get('window').width - 48; // Aumente a margem para alinhar com o padding
-    let percentage = width / sliderWidth;
-      if (percentage < 0) percentage = 0;
-      if (percentage > 1) percentage = 1;
+    const { locationX } = evt.nativeEvent;
+    const sliderWidth = Dimensions.get('window').width - 48; // Margem corrigida
+    let percentage = locationX / sliderWidth;
+    percentage = Math.max(0, Math.min(1, percentage));
     const seekTime = duration * percentage;
     inject(`window.control.seek(${seekTime});`);
     onSeekRequest?.(seekTime);
@@ -118,6 +116,17 @@ export function VideoPlayerSync({ videoId, isPlaying, onPlayRequest, isOwner, on
   return (
     <View style={styles.container}>
       <WebView key={videoId} ref={webViewRef} source={{ html: isYouTube ? youtubePlayerHTML : filePlayerHTML, baseUrl: "https://google.com" }} onMessage={handleMessage} javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback mediaPlaybackRequiresUserAction={false} style={{ backgroundColor: '#000' }} />
+      {hasStarted && (
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowControls(!showControls)}>
+          {showControls && (
+            <View style={styles.controlsUI}>
+              <View style={styles.center}><TouchableOpacity onPress={handleTogglePlay} style={styles.playBtn}><Ionicons name={(isOwner ? isPlaying : localIsPlaying) ? "pause" : "play"} size={40} color="#fff" /></TouchableOpacity></View>
+              <View style={styles.bottom}><Text style={styles.timeText}>{formatTime(currentTime)} / {formatTime(duration)}</Text>
+              <Pressable onPress={handleSliderSeek} style={styles.barBg}><View style={[styles.barFill, { width: `${(currentTime/duration)*100}%` }]} /></Pressable></View>
+            </View>
+          )}
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -125,15 +134,10 @@ export function VideoPlayerSync({ videoId, isPlaying, onPlayRequest, isOwner, on
 const styles = StyleSheet.create({
   container: { width: '100%', height: 240, backgroundColor: '#000', borderRadius: 12, overflow: 'hidden' },
   controlsUI: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', padding: 12, backgroundColor: 'rgba(0,0,0,0.4)' },
-  interactBtn: { alignSelf: 'flex-end', flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.2)', padding: 8, borderRadius: 20, gap: 5 },
-  btnText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   playBtn: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center' },
   bottom: { width: '100%' },
   timeText: { color: '#fff', fontSize: 12, marginBottom: 8 },
   barBg: { height: 20, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, justifyContent: 'center' },
-  barFill: { height: 4, backgroundColor: '#6366F1', borderRadius: 2 },
-  interactOverlayContainer: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end', alignItems: 'center', paddingBottom: 20 },
-  exitBtn: { flexDirection: 'row', backgroundColor: '#22C55E', padding: 12, borderRadius: 30, gap: 8 },
-  exitText: { fontWeight: 'bold' }
+  barFill: { height: 4, backgroundColor: '#6366F1', borderRadius: 2 }
 });
