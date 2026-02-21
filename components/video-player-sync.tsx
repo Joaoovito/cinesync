@@ -98,6 +98,7 @@ export function VideoPlayerSync({
     else {
       if (!isPlaying) return Alert.alert("Aguarde", "O Host pausou o vídeo.");
       onSyncRequest?.(); // 🔥 Solicita o tempo ao servidor
+      inject(`if(window.control) window.control.play(); true;`);
       setLocalIsPlaying(true);
     }
   };
