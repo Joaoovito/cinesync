@@ -10,8 +10,9 @@ interface VideoPlayerSyncProps {
   isOwner: boolean;
   onTimeUpdate?: (currentTime: number) => void;
   onSeekRequest?: (time: number) => void;
-  onSyncRequest?: () => void; // 🔥 Prop adicionada
+  onSyncRequest?: () => void;
   onReady?: () => void;
+  onVideoEnd?: () => void; // 🔥 Gatilho do Auto-Play
   remoteTime?: number;
 }
 
@@ -19,6 +20,14 @@ const formatTime = (seconds: number) => {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+};
+
+// 🔥 EXTRATOR INTELIGENTE: Pega o ID de 11 letras de qualquer link do YouTube
+const extractYouTubeId = (url: string) => {
+  if (!url) return null;
+  if (url.length === 11 && !url.includes('/') && !url.includes('.')) return url;
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([^&?]{11})/);
+  return match ? match[1] : null;
 };
 
 export function VideoPlayerSync({ 
@@ -30,6 +39,7 @@ export function VideoPlayerSync({
   onSeekRequest, 
   onSyncRequest, 
   onReady, 
+  onVideoEnd,
   remoteTime = 0 
 }: VideoPlayerSyncProps) {
   const webViewRef = useRef<WebView>(null);
@@ -39,13 +49,16 @@ export function VideoPlayerSync({
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   
-  const isYouTube = videoId && videoId.length === 11 && !videoId.includes('/') && !videoId.includes('.');
+  // Identifica e limpa o ID do YouTube
+  const ytId = extractYouTubeId(videoId);
+  const isYouTube = !!ytId;
 
   const filePlayerHTML = `
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
     <style>body{margin:0;background:#000;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}video,iframe{width:100%;height:100%;border:0;object-fit:contain}</style></head>
     <body>${videoId.includes('.mp4')||videoId.includes('.m3u8')?`<video id="player" src="${videoId}" playsinline webkit-playsinline autoplay></video>`:`<iframe id="player" src="${videoId}" allowfullscreen allow="autoplay;encrypted-media"></iframe>`}
     <script>var p=document.getElementById('player');var isV=p.tagName==='VIDEO';if(isV){p.addEventListener('loadedmetadata',function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'ready',duration:p.duration}))});
+    p.addEventListener('ended',function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'ended'}))}); // 🔥 Evento de Fim de Vídeo Local
     setInterval(function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'status',currentTime:p.currentTime,duration:p.duration||0,paused:p.paused}))},500)}else{window.ReactNativeWebView.postMessage(JSON.stringify({type:'ready',duration:0}))}
     window.control={play:function(){if(isV)p.play()},pause:function(){if(isV)p.pause()},seek:function(t){if(isV&&isFinite(p.duration))p.currentTime=t}};
     </script></body></html>`;
@@ -54,9 +67,12 @@ export function VideoPlayerSync({
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
     <style>html,body{height:100%;width:100%;margin:0;padding:0;background:#000;overflow:hidden}#player{width:100%!important;height:100%!important}</style></head>
     <body><div id="player"></div><script src="https://www.youtube.com/iframe_api"></script>
-    <script>var player;function onYouTubeIframeAPIReady(){player=new YT.Player('player',{height:'100%',width:'100%',videoId:'${videoId}',playerVars:{playsinline:1,controls:0,rel:0,fs:0,autoplay:1,modestbranding:1},events:{onReady:onPlayerReady,onStateChange:onPlayerStateChange}})}
+    <script>var player;function onYouTubeIframeAPIReady(){player=new YT.Player('player',{height:'100%',width:'100%',videoId:'${ytId}',playerVars:{playsinline:1,controls:0,rel:0,fs:0,autoplay:1,modestbranding:1},events:{onReady:onPlayerReady,onStateChange:onPlayerStateChange}})}
     function onPlayerReady(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:'ready'}));e.target.playVideo()}
-    function onPlayerStateChange(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:'status',currentTime:player.getCurrentTime(),duration:player.getDuration(),paused:e.data!==1}))}
+    function onPlayerStateChange(e){
+      window.ReactNativeWebView.postMessage(JSON.stringify({type:'status',currentTime:player.getCurrentTime(),duration:player.getDuration(),paused:e.data!==1}));
+      if(e.data===0) window.ReactNativeWebView.postMessage(JSON.stringify({type:'ended'})); // 🔥 Evento de Fim de Vídeo YouTube
+    }
     setInterval(function(){if(player&&player.getCurrentTime)window.ReactNativeWebView.postMessage(JSON.stringify({type:'status',currentTime:player.getCurrentTime(),duration:player.getDuration()}))},500);
     window.control={play:function(){player.playVideo()},pause:function(){player.pauseVideo()},seek:function(t){player.seekTo(t,true)}};
     </script></body></html>`;
@@ -75,7 +91,7 @@ export function VideoPlayerSync({
 
   useEffect(() => {
     if (!hasStarted || isOwner || remoteTime === 0) return;
-    const diff = Math.abs(currentTime - remoteTime); // 🔥 Variável declarada
+    const diff = Math.abs(currentTime - remoteTime);
     if (diff > 3) inject(`if(window.control)window.control.seek(${remoteTime});true;`);
   }, [remoteTime, hasStarted, isOwner]);
 
@@ -89,6 +105,9 @@ export function VideoPlayerSync({
         if (d.paused !== undefined) setLocalIsPlaying(!d.paused);
         onTimeUpdate?.(d.currentTime);
       }
+      if (d.type === 'ended') {
+        onVideoEnd?.(); // 🔥 Gatilho do React Native
+      }
     } catch (err) {}
   };
 
@@ -97,8 +116,8 @@ export function VideoPlayerSync({
     else if (localIsPlaying) { inject(`window.control.pause();`); setLocalIsPlaying(false); }
     else {
       if (!isPlaying) return Alert.alert("Aguarde", "O Host pausou o vídeo.");
-      onSyncRequest?.(); // 🔥 Solicita o tempo ao servidor
-      inject(`if(window.control) window.control.play(); true;`);
+      onSyncRequest?.();
+      inject(`if(window.control)window.control.play();true;`);
       setLocalIsPlaying(true);
     }
   };
@@ -106,7 +125,7 @@ export function VideoPlayerSync({
   const handleSliderSeek = (evt: any) => {
     if (!isOwner || duration === 0) return;
     const { locationX } = evt.nativeEvent;
-    const sliderWidth = Dimensions.get('window').width - 48; // Margem corrigida
+    const sliderWidth = Dimensions.get('window').width - 48;
     let percentage = locationX / sliderWidth;
     percentage = Math.max(0, Math.min(1, percentage));
     const seekTime = duration * percentage;
