@@ -56,6 +56,7 @@ io.on('connection', (socket) => {
         isPlaying: false,
         currentTime: 0,
         lastActionTime: Date.now(),
+        messages: [],
         mode: 1, // 1: Ditador, 2: Sugestões, 3: Democracia
         queue: [] // Array de vídeos na fila
       };
@@ -74,7 +75,7 @@ io.on('connection', (socket) => {
     // Envia o estado completo para quem acabou de entrar
     io.to(socket.id).emit('room_data', getRoomData(rooms[roomId]));
     io.to(socket.id).emit('queue_updated', rooms[roomId].queue);
-    
+    io.to(socket.id).emit('chat_history', rooms[roomId].messages);
     // Avisa os outros
     socket.to(roomId).emit('user_joined', newUser);
     broadcastRoomList();
@@ -220,6 +221,26 @@ io.on('connection', (socket) => {
 
       socket.to(roomId).emit('sync_video_state', { isPlaying: rooms[roomId].isPlaying, currentTime: rooms[roomId].currentTime });
     }
+  });
+
+
+  socket.on('send_message', ({ roomId, text }) => {
+    const room = rooms[roomId];
+    if (!room || !text || !text.trim()) return;
+
+    const message = {
+      id: Math.random().toString(36).substring(2, 15),
+      text: text.trim(),
+      sender: userName,
+      senderId: socket.id,
+      timestamp: Date.now()
+    };
+
+    // Guarda e mantém apenas as últimas 50 mensagens para não pesar a RAM
+    room.messages.push(message);
+    if (room.messages.length > 50) room.messages.shift();
+
+    io.to(roomId).emit('new_message', message);
   });
 
   socket.on('disconnect', () => {

@@ -1,11 +1,20 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ActivityIndicator, Modal, Alert, TextInput, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { io, Socket } from 'socket.io-client';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar'; // 🔥 Corrige a barra do Android
 import { VideoPlayerSync } from '../../components/video-player-sync';
 import { BrowserSelector } from '../../components/browser-selector';
+
+
+interface ChatMessage {
+  id: string;
+  text: string;
+  sender: string;
+  senderId: string;
+  timestamp: number;
+}
 
 const SOCKET_URL = 'http://192.168.0.5:3000'; 
 
@@ -33,19 +42,25 @@ export default function RoomScreen() {
   const [queue, setQueue] = useState<any[]>([]);
   const [mode, setMode] = useState(1);
   const [users, setUsers] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'queue' | 'users' | 'settings'>('queue');
+  const [activeTab, setActiveTab] = useState<'queue' | 'users' | 'settings' | 'chat'>('queue');
   const [mySocketId, setMySocketId] = useState<string>('');
   const currentTimeRef = useRef(0);
 
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const flatListRef = useRef<FlatList>(null);
+  
   useEffect(() => {
     const newSocket = io(SOCKET_URL, {
       transports: ['websocket'],
       query: { displayName: username }
     });
     setSocket(newSocket);
+
     newSocket.on('connect', () => {
       setMySocketId(newSocket.id || '');
     });
+
     newSocket.emit('join_room', { roomId, videoUrl: decodeURIComponent(params.videoUrl as string || ''), password: roomPassword });
 
     newSocket.on('room_data', (data) => {
@@ -62,7 +77,13 @@ export default function RoomScreen() {
     newSocket.on('sync_video_state', (state) => { setIsPlaying(state.isPlaying); setRemoteTime(state.currentTime); });
     newSocket.on('access_denied', (data) => { Alert.alert("Acesso Negado", data.message); router.replace('/'); });
     newSocket.on('you_were_kicked', () => { Alert.alert("Expulso", "Você foi removido pelo Host."); router.replace('/'); });
+    newSocket.on('chat_history', (history: ChatMessage[]) => {
+      setMessages(history);
+    });
 
+    newSocket.on('new_message', (msg: ChatMessage) => {
+      setMessages(prev => [...prev, msg]);
+    });
     return () => { newSocket.disconnect(); };
   }, [roomId]);
 
@@ -73,6 +94,11 @@ export default function RoomScreen() {
     socket?.emit('video_control', { roomId, action: nextState ? 'play' : 'pause', currentTime: currentTimeRef.current });
   };
 
+  const handleSendMessage = () => {
+    if (!inputText.trim()) return;
+    socket?.emit('send_message', { roomId, text: inputText });
+    setInputText('');
+  };
   const handleSeekRequest = (time: number) => socket?.emit('video_control', { roomId, action: 'seek', currentTime: time });
   const handleIndividualSync = () => socket?.emit('request_individual_sync', { roomId });
   const handleAddVideo = (url: string) => { socket?.emit('add_to_queue', { roomId, url }); setShowBrowser(false); };
@@ -121,6 +147,9 @@ export default function RoomScreen() {
       </View>
 
       <View style={styles.tabBar}>
+        <TouchableOpacity style={[styles.tab, activeTab === 'chat' && styles.activeTab]} onPress={() => setActiveTab('chat')}>
+          <Text style={[styles.tabText, activeTab === 'chat' && styles.activeTabText]}>Chat</Text>
+        </TouchableOpacity>
         <TouchableOpacity style={[styles.tab, activeTab === 'queue' && styles.activeTab]} onPress={() => setActiveTab('queue')}>
           <Text style={[styles.tabText, activeTab === 'queue' && styles.activeTabText]}>Fila ({queue.length})</Text>
         </TouchableOpacity>
@@ -135,6 +164,45 @@ export default function RoomScreen() {
       </View>
 
       <View style={styles.contentArea}>
+        {/* ABA: CHAT */}
+        {activeTab === 'chat' && (
+          <KeyboardAvoidingView 
+            style={{ flex: 1 }} 
+            behavior="padding" // 🔥 Forçamos o padding no Android também
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 360} // 🔥 360 compensa matematicamente o Vídeo, Header e Abas
+          >
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              keyExtractor={item => item.id}
+              onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+              onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+              contentContainerStyle={{ paddingBottom: 10 }}
+              renderItem={({ item }) => {
+                const isMe = item.senderId === mySocketId;
+                return (
+                  <View style={[styles.messageBubble, isMe ? styles.messageMe : styles.messageOther]}>
+                    {!isMe && <Text style={styles.messageSender}>{item.sender}</Text>}
+                    <Text style={styles.messageText}>{item.text}</Text>
+                  </View>
+                );
+              }}
+            />
+            <View style={[styles.chatInputContainer, { marginBottom: Platform.OS === 'android' ? 15 : 0 }]}>
+              <TextInput
+                style={styles.chatInput}
+                placeholder="Diz alguma coisa..."
+                placeholderTextColor="#666"
+                value={inputText}
+                onChangeText={setInputText}
+                onSubmitEditing={handleSendMessage}
+              />
+              <TouchableOpacity style={styles.sendButton} onPress={handleSendMessage}>
+                <Ionicons name="send" size={20} color="white" />
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
+        )}
         {activeTab === 'queue' && (
           <View style={{ flex: 1 }}>
             {queue.length === 0 ? <Text style={styles.emptyMsg}>A fila está vazia.</Text> : queue.map((vid) => (
@@ -252,5 +320,15 @@ const styles = StyleSheet.create({
   menuOption: { flexDirection: 'row', alignItems: 'center', padding: 15, borderBottomWidth: 1, borderBottomColor: '#333' },
   menuOptionText: { color: 'white', fontSize: 16, marginLeft: 15 },
   menuCancel: { marginTop: 20, padding: 15, alignItems: 'center' },
-  menuCancelText: { color: '#EF4444', fontWeight: 'bold', fontSize: 16 }
+  menuCancelText: { color: '#EF4444', fontWeight: 'bold', fontSize: 16 },
+
+  // Estilos do Chat
+  chatInputContainer: { flexDirection: 'row', alignItems: 'center', marginTop: 10, backgroundColor: '#1E1E24', borderRadius: 25, paddingHorizontal: 15, paddingVertical: 5, borderWidth: 1, borderColor: '#333' },
+  chatInput: { flex: 1, color: 'white', minHeight: 40 },
+  sendButton: { padding: 10 },
+  messageBubble: { maxWidth: '80%', padding: 12, borderRadius: 16, marginBottom: 8 },
+  messageMe: { alignSelf: 'flex-end', backgroundColor: '#6366F1', borderBottomRightRadius: 4 },
+  messageOther: { alignSelf: 'flex-start', backgroundColor: '#2A2A35', borderBottomLeftRadius: 4 },
+  messageSender: { color: '#A5B4FC', fontSize: 12, fontWeight: 'bold', marginBottom: 4 },
+  messageText: { color: 'white', fontSize: 14 }
 });

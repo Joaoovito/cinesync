@@ -133,6 +133,17 @@ export function VideoPlayerSync({
     onSeekRequest?.(seekTime);
   };
 
+  const handleSkip = (seconds: number) => {
+    if (!isOwner || duration === 0) return; // Segurança dupla: Só o Host pula o tempo
+    
+    let newTime = currentTime + seconds;
+    // Trava para não dar erro de números negativos ou passar do fim do vídeo
+    newTime = Math.max(0, Math.min(newTime, duration - 1)); 
+    
+    inject(`if(window.control)window.control.seek(${newTime});`);
+    onSeekRequest?.(newTime); // Avisa o servidor para sincronizar todos os espectadores
+  };
+
   return (
     <View style={styles.container}>
       <WebView key={videoId} ref={webViewRef} source={{ html: isYouTube ? youtubePlayerHTML : filePlayerHTML, baseUrl: "https://google.com" }} onMessage={handleMessage} javaScriptEnabled domStorageEnabled allowsInlineMediaPlayback mediaPlaybackRequiresUserAction={false} style={{ backgroundColor: '#000' }} />
@@ -140,7 +151,23 @@ export function VideoPlayerSync({
         <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowControls(!showControls)}>
           {showControls && (
             <View style={styles.controlsUI}>
-              <View style={styles.center}><TouchableOpacity onPress={handleTogglePlay} style={styles.playBtn}><Ionicons name={(isOwner ? isPlaying : localIsPlaying) ? "pause" : "play"} size={40} color="#fff" /></TouchableOpacity></View>
+              <View style={styles.centerRow}>
+                  {isOwner && (
+                    <TouchableOpacity onPress={() => handleSkip(-10)} style={styles.skipBtn}>
+                      <Ionicons name="play-back" size={28} color="#fff" />
+                    </TouchableOpacity>
+                  )}
+                  
+                  <TouchableOpacity onPress={handleTogglePlay} style={styles.playBtn}>
+                    <Ionicons name={(isOwner ? isPlaying : localIsPlaying) ? "pause" : "play"} size={40} color="#fff" />
+                  </TouchableOpacity>
+
+                  {isOwner && (
+                    <TouchableOpacity onPress={() => handleSkip(10)} style={styles.skipBtn}>
+                      <Ionicons name="play-forward" size={28} color="#fff" />
+                    </TouchableOpacity>
+                  )}
+                </View>
               <View style={styles.bottom}><Text style={styles.timeText}>{formatTime(currentTime)} / {formatTime(duration)}</Text>
               <Pressable onPress={handleSliderSeek} style={styles.barBg}><View style={[styles.barFill, { width: `${(currentTime/duration)*100}%` }]} /></Pressable></View>
             </View>
@@ -154,8 +181,9 @@ export function VideoPlayerSync({
 const styles = StyleSheet.create({
   container: { width: '100%', height: 240, backgroundColor: '#000', borderRadius: 12, overflow: 'hidden' },
   controlsUI: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', padding: 12, backgroundColor: 'rgba(0,0,0,0.4)' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  centerRow: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 20 },
   playBtn: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#6366F1', justifyContent: 'center', alignItems: 'center' },
+  skipBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
   bottom: { width: '100%' },
   timeText: { color: '#fff', fontSize: 12, marginBottom: 8 },
   barBg: { height: 20, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, justifyContent: 'center' },
