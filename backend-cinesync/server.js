@@ -2,9 +2,23 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { createExpressMiddleware } = require('@trpc/server/adapters/express');
+const { appRouter } = require('./router');
+const superjson = require('superjson');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
+
+// Mount the tRPC router
+app.use(
+  '/trpc',
+  createExpressMiddleware({
+    router: appRouter,
+    createContext: () => ({}), // Empty context
+    transformer: superjson,
+  }),
+);
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
